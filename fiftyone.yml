@@ -1,0 +1,12 @@
+name: "@Burhan-Q/fo-openai"
+type: plugin
+author: "Burhan-Q"
+version: "0.1.0"
+description: "OpenAI-powered image labeling via LiteLLM for FiftyOne"
+fiftyone:
+  version: ">=1.13.5"
+operators:
+  - run_openai_inference
+  - check_openai_status
+secrets:
+  - FIFTYONE_OPENAI_API_KEY
