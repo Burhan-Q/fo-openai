@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "fiftyone>=1.13.5",
-    "litellm==1.82.6",  # pin for now due to supply chain attack
+    "openai>=2.0.0",
     "pydantic>=2.12.5",
 ]
 
