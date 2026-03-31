@@ -793,7 +793,7 @@ def _task_settings(
             required=False,
             default=stored.get("prompt_override", ""),
             description="Override the default prompt for this task",
-            view=types.TextView(),
+            view=types.TextFieldView(multiline=True),
         )
 
 
