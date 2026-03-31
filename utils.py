@@ -1,11 +1,14 @@
 """Image loading/encoding utilities and config persistence for OpenAI."""
 
+from __future__ import annotations
+
 import base64
 import json
 import mimetypes
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
-_PERSIST_KEYS = [
+_PERSIST_KEYS: list[str] = [
     "model",
     "base_url",
     "api_key",
@@ -28,11 +31,9 @@ _PERSIST_KEYS = [
 ]
 
 
-def normalize_classes(raw):
-    """Convert classes from comma-separated string or list to a clean list.
-
-    Returns a list of strings, or None if empty.
-    """
+def normalize_classes(raw: str | list[Any] | None) -> list[str] | None:
+    """Convert *raw* (comma-separated string, list, or ``None``) to a
+    deduplicated list of stripped strings, or ``None`` if empty."""
     if not raw:
         return None
     if isinstance(raw, list):
@@ -40,12 +41,14 @@ def normalize_classes(raw):
     return [c.strip() for c in raw.split(",") if c.strip()] or None
 
 
-def pick_params(params, exclude=()):
-    """Filter params to persistable keys, dropping Nones.
+def pick_params(
+    params: dict[str, Any], exclude: tuple[str, ...] = ()
+) -> dict[str, Any]:
+    """Filter *params* to persistable keys, dropping ``None`` values.
 
-    Normalizes classes to a list for consistent storage.
+    Classes are normalised to a list for consistent storage.
     """
-    out = {}
+    out: dict[str, Any] = {}
     for k in _PERSIST_KEYS:
         if k in params and k not in exclude and params[k] is not None:
             v = normalize_classes(params[k]) if k == "classes" else params[k]
@@ -54,14 +57,15 @@ def pick_params(params, exclude=()):
     return out
 
 
-def _global_store():
+def _global_store() -> Any:
+    """Return the cross-dataset ``ExecutionStore`` for plugin config."""
     from fiftyone.operators.store import ExecutionStore
 
     return ExecutionStore.create("openai_config", dataset_id=None)
 
 
-def get_global_config():
-    """Read global config from the cross-dataset ExecutionStore."""
+def get_global_config() -> dict[str, Any]:
+    """Read global config from the cross-dataset ``ExecutionStore``."""
     try:
         cfg = _global_store().get("config")
         return cfg if isinstance(cfg, dict) else {}
@@ -69,15 +73,15 @@ def get_global_config():
         return {}
 
 
-def save_global_config(params):
-    """Persist params to the cross-dataset ExecutionStore."""
+def save_global_config(params: dict[str, Any]) -> None:
+    """Persist *params* to the cross-dataset ``ExecutionStore``."""
     try:
         _global_store().set("config", pick_params(params))
     except Exception:
         pass
 
 
-def clear_global_config():
+def clear_global_config() -> None:
     """Delete the cross-dataset config key."""
     try:
         _global_store().delete("config")
@@ -85,10 +89,13 @@ def clear_global_config():
         pass
 
 
-def parse_config_json(json_str):
-    """Parse JSON string, filter to known keys.
+def parse_config_json(
+    json_str: str,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse a JSON string and filter to known config keys.
 
-    Returns (dict, None) or (None, err).
+    Returns ``(config_dict, None)`` on success or ``(None, error_msg)``
+    on failure.
     """
     try:
         raw = json.loads(json_str)
@@ -99,24 +106,24 @@ def parse_config_json(json_str):
     return {k: raw[k] for k in _PERSIST_KEYS if k in raw}, None
 
 
-def build_image_contents(filepaths, max_workers=4, image_detail="auto"):
-    """Build image content dicts for OpenAI chat messages.
+def build_image_contents(
+    filepaths: list[str],
+    max_workers: int = 4,
+    image_detail: str = "auto",
+) -> list[dict[str, Any]]:
+    """Build image-content dicts for OpenAI chat messages.
 
-    URLs (http/https) are passed through directly. Local files are
-    base64-encoded. The ``image_detail`` parameter is set on every
-    image_url dict so the API respects the user's detail preference.
-
-    Args:
-        filepaths: paths or URLs to image files.
-        max_workers: ThreadPoolExecutor size for parallel base64 encoding.
-        image_detail: OpenAI image detail level ("low", "high", or "auto").
+    HTTP(S) URLs are passed through directly.  Local files are
+    base64-encoded in parallel.  The *image_detail* level (``"low"``,
+    ``"high"``, or ``"auto"``) is set on every resulting ``image_url``
+    dict.
     """
-    results = [None] * len(filepaths)
-    to_encode = []
+    results: list[dict[str, Any]] = [{}] * len(filepaths)
+    to_encode: list[int] = []
 
     for i, fp in enumerate(filepaths):
         if fp.startswith(("http://", "https://")):
-            results[i] = _url_content(fp, detail=image_detail)
+            results[i] = _url_content(fp)
         else:
             to_encode.append(i)
 
@@ -125,18 +132,21 @@ def build_image_contents(filepaths, max_workers=4, image_detail="auto"):
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             encoded = list(pool.map(_encode_base64, paths))
         for idx, enc in zip(to_encode, encoded):
-            enc["image_url"]["detail"] = image_detail
             results[idx] = enc
+
+    # Apply detail level uniformly
+    for item in results:
+        item["image_url"]["detail"] = image_detail
 
     return results
 
 
-def _url_content(url, detail="auto"):
-    """Wrap an HTTP(S) URL as an image_url content dict."""
-    return {"type": "image_url", "image_url": {"url": url, "detail": detail}}
+def _url_content(url: str) -> dict[str, Any]:
+    """Wrap an HTTP(S) URL as an ``image_url`` content dict."""
+    return {"type": "image_url", "image_url": {"url": url}}
 
 
-def _encode_base64(filepath):
+def _encode_base64(filepath: str) -> dict[str, Any]:
     """Read and base64-encode a single image file."""
     mime = mimetypes.guess_type(filepath)[0] or "image/jpeg"
     with open(filepath, "rb") as f:

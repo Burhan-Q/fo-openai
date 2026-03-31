@@ -1,8 +1,10 @@
 """TaskConfig: Pydantic response models, prompts, structured output schemas,
 and post-generation validation for all vision inference tasks."""
 
+from __future__ import annotations
+
 import logging
-from typing import Literal
+from typing import Any
 
 import fiftyone as fo
 from pydantic import BaseModel, create_model
@@ -52,28 +54,36 @@ class DetectResponse(BaseModel):
 # -- Dynamic constrained model builders --
 
 
-def _constrained_classify_model(classes: list[str]):
-    """Build a Pydantic model with label constrained to specific classes."""
-    literal_type = Literal[tuple(classes)]
+def _constrained_classify_model(classes: list[str]) -> type[BaseModel]:
+    """Build a Pydantic model with ``label`` constrained to *classes*."""
+    from typing import Literal
+
+    literal_type = Literal[tuple(classes)]  # type: ignore[valid-type]
     return create_model("ClassifyConstrained", label=(literal_type, ...))
 
 
-def _constrained_tag_model(classes: list[str]):
-    """Build a Pydantic model with labels constrained to specific classes."""
-    literal_type = Literal[tuple(classes)]
+def _constrained_tag_model(classes: list[str]) -> type[BaseModel]:
+    """Build a Pydantic model with ``labels`` constrained to *classes*."""
+    from typing import Literal
+
+    literal_type = Literal[tuple(classes)]  # type: ignore[valid-type]
     return create_model("TagConstrained", labels=(list[literal_type], ...))
 
 
-def _constrained_detect_model(classes: list[str]):
-    """Build a Pydantic model with detection labels constrained."""
-    literal_type = Literal[tuple(classes)]
-    item = create_model("DetItem", label=(literal_type, ...), box=(list[float], ...))
+def _constrained_detect_model(classes: list[str]) -> type[BaseModel]:
+    """Build a Pydantic model with detection labels constrained to *classes*."""
+    from typing import Literal
+
+    literal_type = Literal[tuple(classes)]  # type: ignore[valid-type]
+    item = create_model(
+        "DetItem", label=(literal_type, ...), box=(list[float], ...)
+    )
     return create_model("DetectConstrained", detections=(list[item], ...))
 
 
 # -- Estimated output tokens per task (for cost preview) --
 
-_OUTPUT_TOKEN_ESTIMATES = {
+OUTPUT_TOKEN_ESTIMATES: dict[str, int] = {
     "caption": 80,
     "classify": 15,
     "tag": 40,
@@ -82,11 +92,21 @@ _OUTPUT_TOKEN_ESTIMATES = {
     "ocr": 100,
 }
 
+# Image token counts by OpenAI detail level
+IMAGE_TOKEN_COUNTS: dict[str, int] = {
+    "low": 85,
+    "high": 765,
+    "auto": 765,
+}
+
+# Base prompt text token estimate (system + user prompt text, no image)
+PROMPT_TEXT_TOKENS: int = 50
+
 
 class TaskConfig:
     """Builds prompts, Pydantic response models, and parses LLM responses."""
 
-    TASKS = {
+    TASKS: dict[str, dict[str, Any]] = {
         "caption": {
             "system": (
                 "You are an image captioner. Respond with a JSON object:"
@@ -99,7 +119,8 @@ class TaskConfig:
         },
         "classify": {
             "system": (
-                "You are an image classifier. Respond with exactly one class label."
+                "You are an image classifier. Respond with exactly one"
+                " class label."
             ),
             "system_open": (
                 "You are an image classifier. Respond with a JSON object:"
@@ -151,70 +172,71 @@ class TaskConfig:
         },
     }
 
-    _BOX_FORMATS = {
-        "xyxy": {"labels": "[x_min, y_min, x_max, y_max]"},
-        "xywh": {"labels": "[x, y, width, height]"},
-        "cxcywh": {"labels": "[cx, cy, width, height]"},
+    _BOX_FORMATS: dict[str, str] = {
+        "xyxy": "[x_min, y_min, x_max, y_max]",
+        "xywh": "[x, y, width, height]",
+        "cxcywh": "[cx, cy, width, height]",
     }
 
-    _COORD_FORMATS = {
-        "normalized_1000": {
-            "desc": (
-                "0-1000 normalized coordinates where 0 is top-left"
-                " and 1000 is bottom-right"
-            ),
-            "item_schema": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 1000,
-            },
-        },
-        "normalized_1": {
-            "desc": (
-                "0-1 normalized coordinates where 0.0 is top-left"
-                " and 1.0 is bottom-right"
-            ),
-            "item_schema": {
-                "type": "number",
-                "minimum": 0,
-                "maximum": 1,
-            },
-        },
-        "pixel": {
-            "desc": "pixel coordinates",
-            "item_schema": {"type": "number", "minimum": 0},
-        },
+    _COORD_DESCS: dict[str, str] = {
+        "normalized_1000": (
+            "0-1000 normalized coordinates where 0 is top-left"
+            " and 1000 is bottom-right"
+        ),
+        "normalized_1": (
+            "0-1 normalized coordinates where 0.0 is top-left"
+            " and 1.0 is bottom-right"
+        ),
+        "pixel": "pixel coordinates",
     }
 
     def __init__(
         self,
-        task,
-        prompt=None,
-        system_prompt=None,
-        classes=None,
-        coordinate_format="normalized_1",
-        box_format="xyxy",
-        **template_kwargs,
-    ):
+        task: str,
+        prompt: str | None = None,
+        system_prompt: str | None = None,
+        classes: list[str] | None = None,
+        coordinate_format: str = "normalized_1",
+        box_format: str = "xyxy",
+        **template_kwargs: str,
+    ) -> None:
+        """Initialise a task configuration with prompts and constraints.
+
+        Args:
+            task: Task identifier (one of ``TASKS`` keys).
+            prompt: Custom user prompt override.  Uses the task default when
+                ``None``.
+            system_prompt: Custom system prompt override.
+            classes: Class labels for classify / tag / detect.  ``None``
+                activates the open-ended variant for classify and tag.
+            coordinate_format: Bounding-box coordinate convention
+                (``"normalized_1"``, ``"normalized_1000"``, or ``"pixel"``).
+            box_format: Bounding-box layout
+                (``"xyxy"``, ``"xywh"``, or ``"cxcywh"``).
+            **template_kwargs: Extra format kwargs for prompt templates
+                (e.g. ``question`` for VQA).
+        """
         if task not in self.TASKS:
-            raise ValueError(f"Unknown task: {task}. Must be one of {list(self.TASKS)}")
+            raise ValueError(
+                f"Unknown task: {task}. Must be one of {list(self.TASKS)}"
+            )
 
         defaults = self.TASKS[task]
-        self.task = task
-        self.classes = classes
-        self.output_type = defaults["output_type"]
-        self.default_field = defaults["default_field"]
-        self.default_temperature = defaults["default_temperature"]
-        self.coordinate_format = coordinate_format
-        self.box_format = box_format
+        self.task: str = task
+        self.classes: list[str] | None = classes
+        self.output_type: str = defaults["output_type"]
+        self.default_field: str = defaults["default_field"]
+        self.default_temperature: float = defaults["default_temperature"]
+        self.coordinate_format: str = coordinate_format
+        self.box_format: str = box_format
 
         if task == "detect":
-            coord = self._COORD_FORMATS.get(
-                coordinate_format, self._COORD_FORMATS["normalized_1"]
+            coord_desc = self._COORD_DESCS.get(
+                coordinate_format, self._COORD_DESCS["normalized_1"]
             )
-            coord_desc = coord["desc"]
-            box_fmt = self._BOX_FORMATS.get(box_format, self._BOX_FORMATS["xyxy"])
-            box_labels = box_fmt["labels"]
+            box_labels = self._BOX_FORMATS.get(
+                box_format, self._BOX_FORMATS["xyxy"]
+            )
 
             default_system = (
                 "You are an object detector. Respond with a JSON object:"
@@ -232,11 +254,15 @@ class TaskConfig:
             )
         else:
             open_ended = task in ("classify", "tag") and not classes
-            default_system = defaults.get("system_open" if open_ended else "system", "")
-            default_prompt = defaults.get("prompt_open" if open_ended else "prompt", "")
+            default_system = defaults.get(
+                "system_open" if open_ended else "system", ""
+            )
+            default_prompt = defaults.get(
+                "prompt_open" if open_ended else "prompt", ""
+            )
             default_prompt_with_classes = None
 
-        self.system_prompt = (
+        self.system_prompt: str = (
             system_prompt if system_prompt is not None else default_system
         )
 
@@ -247,16 +273,20 @@ class TaskConfig:
         else:
             raw_prompt = default_prompt
 
-        fmt_kwargs = {**template_kwargs}
+        fmt_kwargs: dict[str, str] = {**template_kwargs}
         if classes:
             fmt_kwargs["classes"] = ", ".join(classes)
-        self.prompt = raw_prompt.format(**fmt_kwargs) if fmt_kwargs else raw_prompt
+        self.prompt: str = (
+            raw_prompt.format(**fmt_kwargs) if fmt_kwargs else raw_prompt
+        )
 
-    def build_messages(self, image_content):
-        """Build OpenAI-format messages for one image."""
-        messages = []
+    def build_messages(self, image_content: dict[str, Any]) -> list[dict[str, Any]]:
+        """Build OpenAI-format chat messages for a single image."""
+        messages: list[dict[str, Any]] = []
         if self.system_prompt:
-            messages.append({"role": "system", "content": self.system_prompt})
+            messages.append(
+                {"role": "system", "content": self.system_prompt}
+            )
         messages.append(
             {
                 "role": "user",
@@ -268,12 +298,12 @@ class TaskConfig:
         )
         return messages
 
-    def get_response_model(self):
+    def get_response_model(self) -> type[BaseModel]:
         """Return the Pydantic model class for structured output.
 
-        If classes are provided, returns a dynamically constrained model
-        with Literal type annotations that produce JSON schema enum
-        constraints.
+        When *classes* are set, returns a dynamically-built model whose
+        ``label`` field carries a ``Literal`` constraint that produces a
+        JSON-schema ``enum``.
         """
         if self.task == "classify":
             if self.classes:
@@ -296,17 +326,22 @@ class TaskConfig:
         # caption, ocr
         return TextResponse
 
-    def estimated_output_tokens(self):
-        """Rough estimate of output tokens for cost preview."""
-        return _OUTPUT_TOKEN_ESTIMATES.get(self.task, 60)
+    def estimated_output_tokens(self) -> int:
+        """Return a rough token-count estimate for cost previews."""
+        return OUTPUT_TOKEN_ESTIMATES.get(self.task, 60)
 
     # -- Output parsing --
 
-    def parse_response(self, text, image_width=None, image_height=None):
-        """Parse LLM response into a FiftyOne label.
+    def parse_response(
+        self,
+        text: str,
+        image_width: float | None = None,
+        image_height: float | None = None,
+    ) -> fo.Classification | fo.Classifications | fo.Detections:
+        """Parse an LLM JSON response into a FiftyOne label.
 
-        Uses Pydantic model_validate_json for validation, then converts
-        to the appropriate FiftyOne label type.
+        Uses ``model_validate_json`` for Pydantic validation, then
+        converts the parsed object to the appropriate FiftyOne label type.
         """
         model_cls = self.get_response_model()
         parsed = model_cls.model_validate_json(text)
@@ -334,22 +369,26 @@ class TaskConfig:
 
         raise ValueError(f"Unknown task: {self.task}")
 
-    def _parse_detections(self, parsed, image_width=None, image_height=None):
-        """Post-generation validation for detection output.
+    def _parse_detections(
+        self,
+        parsed: DetectResponse,
+        image_width: float | None = None,
+        image_height: float | None = None,
+    ) -> fo.Detections:
+        """Validate detection coordinates and convert to FiftyOne format.
 
-        The Pydantic model guarantees structure. This validates what
-        schemas cannot enforce: coordinate ranges, degenerate boxes.
+        The Pydantic model guarantees structure; this validates what
+        schemas cannot enforce (coordinate ranges, degenerate boxes).
         """
-        detections = []
+        detections: list[fo.Detection] = []
         raw = parsed.detections
 
         for det in raw:
-            box = det.box
-            if len(box) != 4:
+            if len(det.box) != 4:
                 continue
 
             result = _convert_box(
-                *[float(v) for v in box],
+                *[float(v) for v in det.box],
                 coordinate_format=self.coordinate_format,
                 box_format=self.box_format,
                 img_w=image_width,
@@ -359,10 +398,7 @@ class TaskConfig:
                 continue
 
             detections.append(
-                fo.Detection(
-                    label=det.label,
-                    bounding_box=list(result),
-                )
+                fo.Detection(label=det.label, bounding_box=list(result))
             )
 
         if len(detections) < len(raw):
@@ -375,39 +411,52 @@ class TaskConfig:
         return fo.Detections(detections=detections)
 
 
-_COORD_SCALE = {"normalized_1000": 1000.0, "normalized_1": 1.0}
+_COORD_SCALE: dict[str, float] = {
+    "normalized_1000": 1000.0,
+    "normalized_1": 1.0,
+}
 
 
 def _convert_box(
-    v0, v1, v2, v3, coordinate_format, box_format="xyxy", img_w=None, img_h=None
-):
-    """Convert model box output to FiftyOne [x, y, w, h] in [0, 1].
+    v0: float,
+    v1: float,
+    v2: float,
+    v3: float,
+    coordinate_format: str,
+    box_format: str = "xyxy",
+    img_w: float | None = None,
+    img_h: float | None = None,
+) -> tuple[float, float, float, float] | None:
+    """Convert model box output to FiftyOne ``[x, y, w, h]`` in ``[0, 1]``.
 
     Two-step pipeline:
-      A. Convert from model box_format to internal xyxy.
-      B. Normalize to [0, 1] based on coordinate_format.
 
-    Returns None if degenerate or missing required dimensions.
+    A. Convert from *box_format* to internal ``xyxy``.
+    B. Normalise to ``[0, 1]`` based on *coordinate_format*.
+
+    Returns ``None`` for degenerate boxes or missing required dimensions.
     """
     # Step A: convert to xyxy
     if box_format == "xywh":
         x1, y1, x2, y2 = v0, v1, v0 + v2, v1 + v3
     elif box_format == "cxcywh":
-        x1, y1, x2, y2 = v0 - v2 / 2, v1 - v3 / 2, v0 + v2 / 2, v1 + v3 / 2
+        x1, y1 = v0 - v2 / 2, v1 - v3 / 2
+        x2, y2 = v0 + v2 / 2, v1 + v3 / 2
     else:  # xyxy
         x1, y1, x2, y2 = v0, v1, v2, v3
 
-    # Step B: resolve per-axis scale and normalize to [0, 1] xywh
+    # Step B: resolve per-axis scale and normalise to [0, 1] xywh
     scale = _COORD_SCALE.get(coordinate_format)
     if scale is not None:
         max_x = max_y = scale
     elif coordinate_format == "pixel":
         if img_w is None or img_h is None:
-            logger.warning("Pixel coordinates require image dimensions; skipping box")
+            logger.warning(
+                "Pixel coordinates require image dimensions; skipping box"
+            )
             return None
         max_x, max_y = float(img_w), float(img_h)
     else:
-        # Unknown format fallback — no normalization
         if x2 <= x1 or y2 <= y1:
             return None
         return x1, y1, x2 - x1, y2 - y1

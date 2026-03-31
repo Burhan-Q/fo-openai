@@ -1,14 +1,23 @@
 """FiftyOne operator for OpenAI inference: UI, batching, progress, and result
 storage."""
 
+from __future__ import annotations
+
 import json
 import os
+from typing import Any, Generator
 
+import fiftyone as fo
 import fiftyone.operators as foo
 from fiftyone.operators import types
 
 from .engine import OpenAIEngine
-from .tasks import TaskConfig
+from .tasks import (
+    IMAGE_TOKEN_COUNTS,
+    OUTPUT_TOKEN_ESTIMATES,
+    PROMPT_TEXT_TOKENS,
+    TaskConfig,
+)
 from .utils import (
     build_image_contents,
     clear_global_config,
@@ -19,7 +28,7 @@ from .utils import (
     save_global_config,
 )
 
-_DEFAULTS = {
+_DEFAULTS: dict[str, Any] = {
     "batch_size": 8,
     "max_tokens": 512,
     "top_p": 1.0,
@@ -32,8 +41,11 @@ _DEFAULTS = {
 
 
 class OpenAIInference(foo.Operator):
+    """Send images to OpenAI vision models for labeling via LiteLLM."""
+
     @property
-    def config(self):
+    def config(self) -> foo.OperatorConfig:
+        """Return the operator configuration."""
         return foo.OperatorConfig(
             name="run_openai_inference",
             label="Run OpenAI Inference",
@@ -44,7 +56,8 @@ class OpenAIInference(foo.Operator):
             default_choice_to_delegated=True,
         )
 
-    def resolve_input(self, ctx):
+    def resolve_input(self, ctx: Any) -> types.Property:
+        """Build the dynamic input form shown to the user."""
         inputs = types.Object()
 
         if not ctx.dataset:
@@ -65,55 +78,10 @@ class OpenAIInference(foo.Operator):
             label="Configuration",
             view=mode_radio,
         )
-        config_mode = ctx.params.get("config_mode", "manual")
+        config_mode: str = ctx.params.get("config_mode", "manual")
 
         if config_mode == "json":
-            inputs.str(
-                "config_json",
-                label="Paste JSON Config",
-                required=True,
-                description="Paste a config exported from a previous run",
-                view=types.CodeView(language="json"),
-            )
-            inputs.bool(
-                "show_params",
-                label="Show accepted parameters",
-                default=False,
-                view=types.SwitchView(),
-            )
-            if ctx.params.get("show_params"):
-                inputs.md(
-                    "**Model:** `model`, `base_url`\n\n"
-                    "**Task:** `task`, `classes`, `question`, `prompt`, "
-                    "`system_prompt`, `prompt_override`\n\n"
-                    "**Advanced:** `temperature`, `max_tokens`, `top_p`, "
-                    "`seed`, `batch_size`, `max_concurrent`, `max_workers`, "
-                    "`image_detail`, `coordinate_format`, `box_format`",
-                    name="params_ref",
-                )
-            raw = ctx.params.get("config_json")
-            if raw:
-                cfg, err = parse_config_json(raw)
-                if err:
-                    inputs.view("json_err", types.Error(label=err))
-                else:
-                    missing = [k for k in ("model", "task") if not cfg.get(k)]
-                    if cfg.get("task") == "vqa" and not cfg.get("question"):
-                        missing.append("question")
-                    if missing:
-                        inputs.view(
-                            "json_warn",
-                            types.Warning(
-                                label="Missing required: " + ", ".join(missing)
-                            ),
-                        )
-                    else:
-                        inputs.view(
-                            "json_ok",
-                            types.Notice(
-                                label=(f"Valid: {cfg['task']} task with {cfg['model']}")
-                            ),
-                        )
+            _json_config_mode(ctx, inputs)
         elif config_mode == "reset":
             inputs.view(
                 "reset_notice",
@@ -135,14 +103,18 @@ class OpenAIInference(foo.Operator):
         if config_mode != "reset":
             inputs.view_target(ctx)
 
-        return types.Property(inputs, view=types.View(label="OpenAI Inference"))
+        return types.Property(
+            inputs, view=types.View(label="OpenAI Inference")
+        )
 
-    def resolve_delegation(self, ctx):
+    def resolve_delegation(self, ctx: Any) -> bool | None:
+        """Let the user choose immediate vs. delegated execution."""
         return ctx.params.get("delegate", None)
 
-    def execute(self, ctx):
-        params = ctx.params
-        config_mode = params.get("config_mode", "manual")
+    def execute(self, ctx: Any) -> Generator[Any, None, None]:
+        """Run inference over the target view, yielding progress."""
+        params: dict[str, Any] = ctx.params
+        config_mode: str = params.get("config_mode", "manual")
 
         # Handle reset mode
         if config_mode == "reset":
@@ -162,7 +134,9 @@ class OpenAIInference(foo.Operator):
                 return
             params.update(cfg)
             if not params.get("model") or not params.get("task"):
-                yield _error(ctx, "Config missing required 'model' or 'task'")
+                yield _error(
+                    ctx, "Config missing required 'model' or 'task'"
+                )
                 return
 
         # Resolve classes from field picker if applicable
@@ -178,33 +152,32 @@ class OpenAIInference(foo.Operator):
         if params.get("temperature") is None:
             engine.temperature = task.default_temperature
 
-        batch_size = params.get("batch_size", _DEFAULTS["batch_size"])
-        image_detail = params.get("image_detail", _DEFAULTS["image_detail"])
+        batch_size: int = params.get("batch_size", _DEFAULTS["batch_size"])
+        image_detail: str = params.get(
+            "image_detail", _DEFAULTS["image_detail"]
+        )
 
         # Get target samples and resolve output field
         view = ctx.target_view()
-        ids = view.values("id")
-        filepaths = view.values("filepath")
-        total = len(ids)
-        max_workers = params.get("max_workers", _DEFAULTS["max_workers"])
+        ids: list[str] = view.values("id")
+        filepaths: list[str] = view.values("filepath")
+        total: int = len(ids)
+        max_workers: int = params.get("max_workers", _DEFAULTS["max_workers"])
 
         response_model = task.get_response_model()
 
-        # Resolve output field name
         field_name = _resolve_field_name(
-            ctx.dataset,
-            params["task"],
-            params.get("overwrite_last", False),
+            ctx.dataset, params["task"], params.get("overwrite_last", False)
         )
 
         # Build metadata for optional per-label logging
-        log_metadata = params.get("log_metadata", False)
+        log_metadata: bool = params.get("log_metadata", False)
+        full_prompt = ""
+        infer_cfg: dict[str, Any] = {}
         if log_metadata:
-            full_prompt = ""
             if task.system_prompt:
                 full_prompt += f"[system] {task.system_prompt}\n"
             full_prompt += f"[user] {task.prompt}"
-
             infer_cfg = {
                 "temperature": engine.temperature,
                 "max_tokens": engine.max_tokens,
@@ -218,20 +191,21 @@ class OpenAIInference(foo.Operator):
         # Clear stale error fields when overwriting
         if params.get("overwrite_last", False):
             error_field = f"{field_name}_error"
-            schema = ctx.dataset.get_field_schema(flat=True)
-            if error_field in schema:
+            if error_field in ctx.dataset.get_field_schema(flat=True):
                 ctx.dataset.set_values(
                     error_field,
                     {sid: None for sid in ids},
                     key_field="id",
                 )
 
-        # Collect image dimensions for pixel coordinate normalization
-        need_dims = task.task == "detect" and task.coordinate_format == "pixel"
+        # Collect image dimensions for pixel coordinate normalisation
+        need_dims = (
+            task.task == "detect" and task.coordinate_format == "pixel"
+        )
         if need_dims:
             view.compute_metadata()
-            widths = view.values("metadata.width")
-            heights = view.values("metadata.height")
+            widths: list[float | None] = view.values("metadata.width")
+            heights: list[float | None] = view.values("metadata.height")
         else:
             widths = [None] * total
             heights = [None] * total
@@ -241,30 +215,26 @@ class OpenAIInference(foo.Operator):
         total_errors = 0
 
         for i in range(0, total, batch_size):
-            batch_ids = ids[i : i + batch_size]
-            batch_paths = filepaths[i : i + batch_size]
-            batch_widths = widths[i : i + batch_size]
-            batch_heights = heights[i : i + batch_size]
+            end = i + batch_size
+            batch_ids = ids[i:end]
+            batch_paths = filepaths[i:end]
+            batch_widths = widths[i:end]
+            batch_heights = heights[i:end]
 
-            # Parallel image content construction
             image_contents = build_image_contents(
                 batch_paths,
                 max_workers=max_workers,
                 image_detail=image_detail,
             )
-
-            # Build messages for each image
-            batch_messages = [task.build_messages(img) for img in image_contents]
-
-            # Batch inference with structured output
+            batch_messages = [
+                task.build_messages(img) for img in image_contents
+            ]
             responses = engine.infer_batch(
-                batch_messages,
-                response_model=response_model,
+                batch_messages, response_model=response_model
             )
 
-            # Parse responses with per-sample error handling
-            results = {}
-            errors = {}
+            results: dict[str, Any] = {}
+            errors: dict[str, str] = {}
             for sid, resp, img_w, img_h in zip(
                 batch_ids, responses, batch_widths, batch_heights
             ):
@@ -285,22 +255,17 @@ class OpenAIInference(foo.Operator):
                     errors[sid] = f"{type(e).__name__}: {e}"
                     total_errors += 1
 
-            # Bulk-write results and errors
-            _write_batch_results(
-                ctx.dataset,
-                field_name,
-                results,
-                errors,
-            )
+            _write_batch_results(ctx.dataset, field_name, results, errors)
 
-            # Progress
             processed += len(batch_ids)
             progress_label = f"{processed}/{total} samples"
             if total_errors:
                 progress_label += f" ({total_errors} errors)"
 
             if ctx.delegated:
-                ctx.set_progress(progress=processed / total, label=progress_label)
+                ctx.set_progress(
+                    progress=processed / total, label=progress_label
+                )
             else:
                 yield ctx.trigger(
                     "set_progress",
@@ -309,7 +274,7 @@ class OpenAIInference(foo.Operator):
 
         # Persist run metadata and settings
         if log_metadata:
-            runs = ctx.dataset.info.get("openai_runs", {})
+            runs: dict[str, Any] = ctx.dataset.info.get("openai_runs", {})
             runs[field_name] = {
                 "model_name": params["model"],
                 "prompt": full_prompt,
@@ -318,17 +283,18 @@ class OpenAIInference(foo.Operator):
             ctx.dataset.info["openai_runs"] = runs
 
         save_global_config(params)
-        ctx.dataset.info["_openai_config"] = pick_params(params, exclude=("api_key",))
+        ctx.dataset.info["_openai_config"] = pick_params(
+            params, exclude=("api_key",)
+        )
         ctx.dataset.save()
 
-        # Notify / reload
         if ctx.delegated:
-            store = ctx.store("openai_status")
-            store.set("done", True)
+            ctx.store("openai_status").set("done", True)
         else:
             yield ctx.trigger("reload_dataset")
 
-    def resolve_output(self, ctx):
+    def resolve_output(self, ctx: Any) -> types.Property:
+        """Display an exportable JSON config after execution."""
         outputs = types.Object()
         outputs.str("summary", label="Summary")
 
@@ -347,13 +313,14 @@ class OpenAIInference(foo.Operator):
 
 
 class CheckOpenAIStatus(foo.Operator):
-    """Subscribes to the ``openai_status`` execution store via MongoDB
-    change-stream notifications. When the delegated worker writes a
-    completion signal, this operator fires a toast and reloads the dataset.
+    """Auto-subscribe to delegated-job completion via MongoDB change-stream.
+
+    Fires a toast and reloads the dataset when the worker signals done.
     """
 
     @property
-    def config(self):
+    def config(self) -> foo.OperatorConfig:
+        """Return the operator configuration."""
         return foo.OperatorConfig(
             name="check_openai_status",
             label="Check OpenAI Status",
@@ -362,7 +329,8 @@ class CheckOpenAIStatus(foo.Operator):
             unlisted=True,
         )
 
-    async def execute(self, ctx):
+    async def execute(self, ctx: Any) -> Any:
+        """Wait for a completion signal, then notify and reload."""
         import asyncio
 
         from fiftyone.operators.store.notification_service import (
@@ -375,7 +343,8 @@ class CheckOpenAIStatus(foo.Operator):
         loop = asyncio.get_running_loop()
         event = asyncio.Event()
 
-        def _on_change(_message):
+        def _on_change(_message: Any) -> None:
+            """Set the event from the notification callback thread."""
             loop.call_soon_threadsafe(event.set)
 
         sub_id = default_notification_service.subscribe(
@@ -386,10 +355,7 @@ class CheckOpenAIStatus(foo.Operator):
 
         try:
             await asyncio.wait_for(event.wait(), timeout=600)
-
-            store = ctx.store("openai_status")
-            store.delete("done")
-
+            ctx.store("openai_status").delete("done")
             yield ctx.trigger(
                 "notify",
                 params={
@@ -404,11 +370,13 @@ class CheckOpenAIStatus(foo.Operator):
             default_notification_service.unsubscribe(sub_id)
 
 
-# -- Helpers --
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
-def _error(ctx, message):
-    """Yield-safe error via set_progress."""
+def _error(ctx: Any, message: str) -> Any:
+    """Yield-safe error via ``set_progress``."""
     label = f"Error: {message}"
     if ctx.delegated:
         ctx.set_progress(progress=0, label=label)
@@ -416,8 +384,8 @@ def _error(ctx, message):
     return ctx.trigger("set_progress", {"progress": 0, "label": label})
 
 
-def _resolve_config(ctx):
-    """Merge dataset config > global config > _DEFAULTS."""
+def _resolve_config(ctx: Any) -> dict[str, Any]:
+    """Merge dataset config > global config > ``_DEFAULTS``."""
     merged = dict(_DEFAULTS)
     for cfg in (
         get_global_config(),
@@ -427,12 +395,17 @@ def _resolve_config(ctx):
     return merged
 
 
-def _create_engine(params, secrets):
-    """Build an OpenAIEngine from operator params and secrets.
+def _create_engine(
+    params: dict[str, Any], secrets: Any
+) -> tuple[OpenAIEngine, str]:
+    """Build an ``OpenAIEngine`` from operator params and secrets.
 
-    Returns (engine, api_key).
+    Returns ``(engine, api_key)``.
+
+    Raises:
+        ValueError: If no API key can be resolved.
     """
-    api_key = (
+    api_key: str | None = (
         params.get("api_key")
         or secrets.get("FIFTYONE_OPENAI_API_KEY", None)
         or os.environ.get("OPENAI_API_KEY")
@@ -443,31 +416,29 @@ def _create_engine(params, secrets):
             " FiftyOne secrets, OPENAI_API_KEY in your environment,"
             " or provide an API key in the advanced settings."
         )
-    base_url = params.get("base_url") or None
 
     engine = OpenAIEngine(
         model=params["model"],
         api_key=api_key,
-        base_url=base_url,
-        max_concurrent=params.get("max_concurrent", _DEFAULTS["max_concurrent"]),
+        base_url=params.get("base_url") or None,
+        max_concurrent=params.get(
+            "max_concurrent", _DEFAULTS["max_concurrent"]
+        ),
         temperature=params.get("temperature", None),
         max_tokens=params.get("max_tokens", _DEFAULTS["max_tokens"]),
         top_p=params.get("top_p", _DEFAULTS["top_p"]),
         seed=params.get("seed", None),
     )
-
     return engine, api_key
 
 
-def _create_task(params):
-    """Build a TaskConfig from operator params."""
-    classes = normalize_classes(params.get("classes"))
-
+def _create_task(params: dict[str, Any]) -> TaskConfig:
+    """Build a ``TaskConfig`` from operator params."""
     return TaskConfig(
         task=params["task"],
         prompt=params.get("prompt_override") or params.get("prompt"),
         system_prompt=params.get("system_prompt"),
-        classes=classes,
+        classes=normalize_classes(params.get("classes")),
         coordinate_format=params.get(
             "coordinate_format", _DEFAULTS["coordinate_format"]
         ),
@@ -476,14 +447,15 @@ def _create_task(params):
     )
 
 
-def _resolve_classes_from_field(ctx, params):
-    """If user selected a dataset field as class source, extract unique
-    labels and set them in params."""
-    class_source = params.get("class_source", "custom")
-    if class_source != "field":
+def _resolve_classes_from_field(
+    ctx: Any, params: dict[str, Any]
+) -> None:
+    """When the user chose *field* as the class source, extract unique
+    labels from the selected dataset field and write them into *params*."""
+    if params.get("class_source") != "field":
         return
 
-    source_field = params.get("source_field")
+    source_field: str | None = params.get("source_field")
     if not source_field or not ctx.dataset:
         return
 
@@ -492,35 +464,34 @@ def _resolve_classes_from_field(ctx, params):
         params["classes"] = ", ".join(sorted(label_classes))
 
 
-def _get_field_classes(dataset, field_name):
+_LABEL_PATH_SUFFIXES: list[str] = [
+    ".label",                    # Classification
+    ".classifications.label",    # Classifications
+    ".detections.label",         # Detections
+]
+
+
+def _get_field_classes(dataset: fo.Dataset, field_name: str) -> list[str]:
     """Extract unique class labels from a dataset label field.
 
-    Handles Classification, Classifications, and Detections fields.
+    Handles ``Classification``, ``Classifications``, and ``Detections``
+    fields by probing known sub-field paths.
     """
     schema = dataset.get_field_schema(flat=True)
-
-    # Try Classification path: field.label
-    label_path = f"{field_name}.label"
-    if label_path in schema:
-        return dataset.distinct(label_path)
-
-    # Try Classifications path: field.classifications.label
-    cls_path = f"{field_name}.classifications.label"
-    if cls_path in schema:
-        return dataset.distinct(cls_path)
-
-    # Try Detections path: field.detections.label
-    det_path = f"{field_name}.detections.label"
-    if det_path in schema:
-        return dataset.distinct(det_path)
-
+    for suffix in _LABEL_PATH_SUFFIXES:
+        path = f"{field_name}{suffix}"
+        if path in schema:
+            return dataset.distinct(path)
     return []
 
 
-def _resolve_field_name(dataset, task_name, overwrite=False):
+def _resolve_field_name(
+    dataset: fo.Dataset, task_name: str, overwrite: bool = False
+) -> str:
     """Resolve the output field name for a task run.
 
-    Produces: openai_infer_task_name, openai_infer_task_name1, ...
+    Produces ``openai_infer_{task}``, ``openai_infer_{task}1``, etc.
+    When *overwrite* is ``True`` the highest existing field is reused.
     """
     schema = dataset.get_field_schema(flat=True)
     base = f"openai_infer_{task_name}"
@@ -534,33 +505,35 @@ def _resolve_field_name(dataset, task_name, overwrite=False):
 
     if overwrite:
         return f"{base}{n - 1}" if n > 1 else base
-
     return f"{base}{n}"
 
 
-def _write_batch_results(dataset, field_name, results, errors):
-    """Write a batch of results and errors as flat sample fields."""
+def _write_batch_results(
+    dataset: fo.Dataset,
+    field_name: str,
+    results: dict[str, Any],
+    errors: dict[str, str],
+) -> None:
+    """Bulk-write a batch of results and errors as flat sample fields."""
     if results:
         dataset.set_values(
-            field_name,
-            results,
-            key_field="id",
-            dynamic=True,
+            field_name, results, key_field="id", dynamic=True
         )
     if errors:
         dataset.set_values(
-            f"{field_name}_error",
-            errors,
-            key_field="id",
-            dynamic=True,
+            f"{field_name}_error", errors, key_field="id", dynamic=True
         )
 
 
-# -- UI helper functions --
+# ---------------------------------------------------------------------------
+# UI helper functions
+# ---------------------------------------------------------------------------
 
 
-def _model_selector(ctx, inputs, stored):
-    """Add model selection field."""
+def _model_selector(
+    ctx: Any, inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Add the model text-input field to the form."""
     inputs.str(
         "model",
         label="Model",
@@ -570,8 +543,10 @@ def _model_selector(ctx, inputs, stored):
     )
 
 
-def _task_selector(ctx, inputs, stored):
-    """Add task dropdown."""
+def _task_selector(
+    ctx: Any, inputs: types.Object, stored: dict[str, Any]
+) -> str | None:
+    """Add the task dropdown and return the currently selected task."""
     task_dropdown = types.Dropdown(label="Task")
     task_dropdown.add_choice(
         "caption",
@@ -614,8 +589,67 @@ def _task_selector(ctx, inputs, stored):
     return ctx.params.get("task", None)
 
 
-def _task_settings(ctx, inputs, task, stored):
-    """Add task-specific settings with enhanced class label input."""
+def _json_config_mode(ctx: Any, inputs: types.Object) -> None:
+    """Render the JSON-paste configuration sub-form."""
+    inputs.str(
+        "config_json",
+        label="Paste JSON Config",
+        required=True,
+        description="Paste a config exported from a previous run",
+        view=types.CodeView(language="json"),
+    )
+    inputs.bool(
+        "show_params",
+        label="Show accepted parameters",
+        default=False,
+        view=types.SwitchView(),
+    )
+    if ctx.params.get("show_params"):
+        inputs.md(
+            "**Model:** `model`, `base_url`\n\n"
+            "**Task:** `task`, `classes`, `question`, `prompt`, "
+            "`system_prompt`, `prompt_override`\n\n"
+            "**Advanced:** `temperature`, `max_tokens`, `top_p`, "
+            "`seed`, `batch_size`, `max_concurrent`, `max_workers`, "
+            "`image_detail`, `coordinate_format`, `box_format`",
+            name="params_ref",
+        )
+    raw: str | None = ctx.params.get("config_json")
+    if not raw:
+        return
+
+    cfg, err = parse_config_json(raw)
+    if err:
+        inputs.view("json_err", types.Error(label=err))
+        return
+
+    missing = [k for k in ("model", "task") if not cfg.get(k)]
+    if cfg.get("task") == "vqa" and not cfg.get("question"):
+        missing.append("question")
+
+    if missing:
+        inputs.view(
+            "json_warn",
+            types.Warning(
+                label="Missing required: " + ", ".join(missing)
+            ),
+        )
+    else:
+        inputs.view(
+            "json_ok",
+            types.Notice(
+                label=f"Valid: {cfg['task']} task with {cfg['model']}"
+            ),
+        )
+
+
+def _task_settings(
+    ctx: Any,
+    inputs: types.Object,
+    task: str | None,
+    stored: dict[str, Any],
+) -> None:
+    """Add task-specific settings (classes, question, prompt override)."""
     if task is None:
         return
 
@@ -645,9 +679,10 @@ def _task_settings(ctx, inputs, task, stored):
     )
 
 
-def _class_source_selector(ctx, inputs, stored):
-    """Add 3-source class label input: from dataset field, custom, or
-    open-ended."""
+def _class_source_selector(
+    ctx: Any, inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Add the 3-source class-label input (dataset field / custom / open)."""
     source_radio = types.RadioGroup(orientation="horizontal")
     source_radio.add_choice("field", label="From dataset field")
     source_radio.add_choice("custom", label="Custom list")
@@ -660,7 +695,7 @@ def _class_source_selector(ctx, inputs, stored):
         view=source_radio,
     )
 
-    class_source = ctx.params.get("class_source", "custom")
+    class_source: str = ctx.params.get("class_source", "custom")
 
     if class_source == "field":
         _field_picker(ctx, inputs)
@@ -678,13 +713,12 @@ def _class_source_selector(ctx, inputs, stored):
     # "open" needs no additional input
 
 
-def _field_picker(ctx, inputs):
-    """Add dropdown of existing label fields and show unique labels."""
+def _field_picker(ctx: Any, inputs: types.Object) -> None:
+    """Add a dropdown of existing label fields and preview unique labels."""
     if not ctx.dataset:
         return
 
     label_fields = _find_label_fields(ctx.dataset)
-
     if not label_fields:
         inputs.view(
             "no_fields",
@@ -695,8 +729,7 @@ def _field_picker(ctx, inputs):
     field_dropdown = types.Dropdown(label="Source Field")
     for field_name, field_type in label_fields:
         field_dropdown.add_choice(
-            field_name,
-            label=f"{field_name} ({field_type})",
+            field_name, label=f"{field_name} ({field_type})"
         )
 
     inputs.enum(
@@ -706,51 +739,56 @@ def _field_picker(ctx, inputs):
         view=field_dropdown,
     )
 
-    source_field = ctx.params.get("source_field")
-    if source_field:
-        label_classes = _get_field_classes(ctx.dataset, source_field)
-        if label_classes:
-            sorted_classes = sorted(label_classes)
-            preview = ", ".join(sorted_classes[:20])
-            if len(sorted_classes) > 20:
-                preview += f", ... (+{len(sorted_classes) - 20} more)"
-            inputs.view(
-                "field_classes",
-                types.Notice(label=(f"Found {len(sorted_classes)} classes: {preview}")),
-            )
-        else:
-            inputs.view(
-                "no_classes",
-                types.Warning(label=f"No labels found in field '{source_field}'"),
-            )
+    source_field: str | None = ctx.params.get("source_field")
+    if not source_field:
+        return
+
+    label_classes = _get_field_classes(ctx.dataset, source_field)
+    if not label_classes:
+        inputs.view(
+            "no_classes",
+            types.Warning(
+                label=f"No labels found in field '{source_field}'"
+            ),
+        )
+        return
+
+    sorted_classes = sorted(label_classes)
+    preview = ", ".join(sorted_classes[:20])
+    if len(sorted_classes) > 20:
+        preview += f", ... (+{len(sorted_classes) - 20} more)"
+    inputs.view(
+        "field_classes",
+        types.Notice(
+            label=f"Found {len(sorted_classes)} classes: {preview}"
+        ),
+    )
 
 
-def _find_label_fields(dataset):
-    """Find all label fields (Classification, Classifications, Detections)
-    in the dataset.
-
-    Returns list of (field_name, type_name) tuples.
-    """
-    result = []
-    schema = dataset.get_field_schema()
-    for field_name, field in schema.items():
-        doc_type = getattr(field, "document_type", None)
-        if doc_type is None:
-            continue
-        type_name = doc_type.__name__
-        if type_name in ("Classification", "Classifications", "Detections"):
-            result.append((field_name, type_name))
-    return result
+_LABEL_TYPES: set[str] = {"Classification", "Classifications", "Detections"}
 
 
-def _cost_preview(ctx, inputs, task):
-    """Show inline cost estimate based on model, task, and target view."""
-    model = ctx.params.get("model")
+def _find_label_fields(
+    dataset: fo.Dataset,
+) -> list[tuple[str, str]]:
+    """Return ``(field_name, type_name)`` for every label field in *dataset*."""
+    return [
+        (name, doc_type.__name__)
+        for name, field in dataset.get_field_schema().items()
+        if (doc_type := getattr(field, "document_type", None)) is not None
+        and doc_type.__name__ in _LABEL_TYPES
+    ]
+
+
+def _cost_preview(
+    ctx: Any, inputs: types.Object, task: str | None
+) -> None:
+    """Show an inline cost estimate based on model, task, and view size."""
+    model: str | None = ctx.params.get("model")
     if not model or not task:
         return
 
-    cost_info = OpenAIEngine.get_model_info(model)
-    if cost_info is None:
+    if OpenAIEngine.get_model_info(model) is None:
         inputs.view(
             "cost_notice",
             types.Notice(
@@ -762,16 +800,12 @@ def _cost_preview(ctx, inputs, task):
         )
         return
 
-    # Estimate tokens
-    image_detail = ctx.params.get("image_detail", "auto")
-    image_tokens = {"low": 85, "high": 765, "auto": 765}.get(image_detail, 765)
-    prompt_text_tokens = 50
-    input_tokens_per_sample = prompt_text_tokens + image_tokens
+    image_detail: str = ctx.params.get("image_detail", "auto")
+    input_tokens = PROMPT_TEXT_TOKENS + IMAGE_TOKEN_COUNTS.get(
+        image_detail, 765
+    )
+    output_tokens = OUTPUT_TOKEN_ESTIMATES.get(task, 60)
 
-    task_cfg = TaskConfig(task=task, classes=None)
-    output_tokens_per_sample = task_cfg.estimated_output_tokens()
-
-    # Get sample count
     try:
         num_samples = len(ctx.target_view())
     except Exception:
@@ -780,25 +814,26 @@ def _cost_preview(ctx, inputs, task):
     estimate = OpenAIEngine.estimate_cost(
         model=model,
         num_samples=num_samples,
-        est_input_tokens=input_tokens_per_sample,
-        est_output_tokens=output_tokens_per_sample,
+        est_input_tokens=input_tokens,
+        est_output_tokens=output_tokens,
     )
+    if not estimate:
+        return
 
-    if estimate:
-        per_img = estimate["per_image_cost"]
-        total = estimate["total_cost"]
-
-        label = (
-            f"Estimated cost: ~${per_img:.5f}/image,"
-            f" ~${total:.4f} total for {num_samples} samples"
-        )
-
-        view_type = types.Warning if total > 1.0 else types.Notice
-        inputs.view("cost_estimate", view_type(label=label))
+    per_img = estimate["per_image_cost"]
+    total = estimate["total_cost"]
+    label = (
+        f"Estimated cost: ~${per_img:.5f}/image,"
+        f" ~${total:.4f} total for {num_samples} samples"
+    )
+    view_type = types.Warning if total > 1.0 else types.Notice
+    inputs.view("cost_estimate", view_type(label=label))
 
 
-def _output_settings(ctx, inputs, task):
-    """Add output field and metadata logging settings."""
+def _output_settings(
+    ctx: Any, inputs: types.Object, task: str | None
+) -> None:
+    """Add output-field and metadata-logging settings to the form."""
     if not task or not ctx.dataset:
         return
 
@@ -822,13 +857,11 @@ def _output_settings(ctx, inputs, task):
         resolved = _resolve_field_name(ctx.dataset, task, overwrite)
         prefix = "Overwriting" if overwrite else "Writing to"
         inputs.view(
-            "field_info",
-            types.Notice(label=f"{prefix}: {resolved}"),
+            "field_info", types.Notice(label=f"{prefix}: {resolved}")
         )
     else:
         inputs.view(
-            "field_info",
-            types.Notice(label=f"Writing to: {base_field}"),
+            "field_info", types.Notice(label=f"Writing to: {base_field}")
         )
 
     inputs.bool(
@@ -843,8 +876,10 @@ def _output_settings(ctx, inputs, task):
     )
 
 
-def _advanced_settings(ctx, inputs, stored):
-    """Add collapsible advanced settings."""
+def _advanced_settings(
+    ctx: Any, inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Add collapsible advanced settings to the form."""
     inputs.view(
         "adv_header",
         types.Header(label="Advanced Settings", divider=True),
@@ -886,7 +921,8 @@ def _advanced_settings(ctx, inputs, stored):
         label="Seed",
         default=stored.get("seed"),
         description=(
-            "Random seed for reproducible results (leave empty for non-deterministic)"
+            "Random seed for reproducible results"
+            " (leave empty for non-deterministic)"
         ),
     )
     inputs.int(
@@ -914,7 +950,17 @@ def _advanced_settings(ctx, inputs, stored):
         description="Thread pool size for parallel image loading/encoding",
     )
 
-    # OpenAI image detail level
+    _image_detail_selector(inputs, stored)
+    _base_url_input(inputs, stored)
+
+    if ctx.params.get("task") == "detect":
+        _detection_format_selectors(inputs, stored)
+
+
+def _image_detail_selector(
+    inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Add the OpenAI image-detail dropdown."""
     detail_dropdown = types.Dropdown()
     detail_dropdown.add_choice(
         "auto",
@@ -939,7 +985,11 @@ def _advanced_settings(ctx, inputs, stored):
         view=detail_dropdown,
     )
 
-    # Optional base URL for Azure/proxy setups
+
+def _base_url_input(
+    inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Add the optional base-URL text input for Azure / proxy setups."""
     inputs.str(
         "base_url",
         label="Base URL (Optional)",
@@ -950,30 +1000,35 @@ def _advanced_settings(ctx, inputs, stored):
         ),
     )
 
-    task = ctx.params.get("task")
-    if task == "detect":
-        coord_dropdown = types.Dropdown()
-        coord_dropdown.add_choice("normalized_1", label="0-1 (normalized)")
-        coord_dropdown.add_choice("normalized_1000", label="0-1000 (normalized)")
-        coord_dropdown.add_choice("pixel", label="Pixel coordinates")
-        inputs.enum(
-            "coordinate_format",
-            coord_dropdown.values(),
-            default=stored.get("coordinate_format"),
-            label="Coordinate Format",
-            view=coord_dropdown,
-            description=("Bounding box coordinate convention used by the model"),
-        )
 
-        box_dropdown = types.Dropdown()
-        box_dropdown.add_choice("xyxy", label="xyxy — corners")
-        box_dropdown.add_choice("xywh", label="xywh — origin + size")
-        box_dropdown.add_choice("cxcywh", label="cxcywh — center + size")
-        inputs.enum(
-            "box_format",
-            box_dropdown.values(),
-            default=stored.get("box_format"),
-            label="Box Format",
-            view=box_dropdown,
-            description="Bounding box format produced by the model",
-        )
+def _detection_format_selectors(
+    inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Add coordinate-format and box-format dropdowns for detection tasks."""
+    coord_dropdown = types.Dropdown()
+    coord_dropdown.add_choice("normalized_1", label="0-1 (normalized)")
+    coord_dropdown.add_choice(
+        "normalized_1000", label="0-1000 (normalized)"
+    )
+    coord_dropdown.add_choice("pixel", label="Pixel coordinates")
+    inputs.enum(
+        "coordinate_format",
+        coord_dropdown.values(),
+        default=stored.get("coordinate_format"),
+        label="Coordinate Format",
+        view=coord_dropdown,
+        description="Bounding box coordinate convention used by the model",
+    )
+
+    box_dropdown = types.Dropdown()
+    box_dropdown.add_choice("xyxy", label="xyxy — corners")
+    box_dropdown.add_choice("xywh", label="xywh — origin + size")
+    box_dropdown.add_choice("cxcywh", label="cxcywh — center + size")
+    inputs.enum(
+        "box_format",
+        box_dropdown.values(),
+        default=stored.get("box_format"),
+        label="Box Format",
+        view=box_dropdown,
+        description="Bounding box format produced by the model",
+    )
