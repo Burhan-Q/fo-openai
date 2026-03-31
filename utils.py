@@ -19,15 +19,19 @@ _PERSIST_KEYS: list[str] = [
     "system_prompt",
     "prompt_override",
     "temperature",
-    "max_tokens",
+    "max_completion_tokens",
     "top_p",
     "seed",
     "batch_size",
     "max_concurrent",
     "max_workers",
+    "timeout",
     "image_detail",
     "coordinate_format",
     "box_format",
+    "enable_logging",
+    "log_level",
+    "log_file",
 ]
 
 

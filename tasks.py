@@ -334,18 +334,16 @@ class TaskConfig:
 
     def parse_response(
         self,
-        text: str,
+        parsed: BaseModel,
         image_width: float | None = None,
         image_height: float | None = None,
     ) -> fo.Classification | fo.Classifications | fo.Detections:
-        """Parse an LLM JSON response into a FiftyOne label.
+        """Convert a parsed Pydantic model into a FiftyOne label.
 
-        Uses ``model_validate_json`` for Pydantic validation, then
-        converts the parsed object to the appropriate FiftyOne label type.
+        The OpenAI SDK's ``beta.chat.completions.parse()`` returns
+        ``message.parsed`` as an already-validated Pydantic instance.
+        This method converts it to the corresponding FiftyOne label type.
         """
-        model_cls = self.get_response_model()
-        parsed = model_cls.model_validate_json(text)
-
         if self.task in ("caption", "ocr"):
             return fo.Classification(label=parsed.text)
 

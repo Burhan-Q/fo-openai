@@ -4,13 +4,15 @@ storage."""
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Generator
 
 import fiftyone as fo
 import fiftyone.operators as foo
 from fiftyone.operators import types
 
+from ._log import configure as configure_logging
+from ._log import get_logger, summarise_errors
+from ._pricing import estimate_cost, get_model_info
 from .engine import OpenAIEngine
 from .tasks import (
     IMAGE_TOKEN_COUNTS,
@@ -28,10 +30,10 @@ from .utils import (
     save_global_config,
 )
 
+logger = get_logger(__name__)
+
 _DEFAULTS: dict[str, Any] = {
     "batch_size": 8,
-    "max_tokens": 512,
-    "top_p": 1.0,
     "max_concurrent": 16,
     "max_workers": 4,
     "coordinate_format": "normalized_1",
@@ -97,7 +99,7 @@ class OpenAIInference(foo.Operator):
             task = _task_selector(ctx, inputs, stored)
             _task_settings(ctx, inputs, task, stored)
             _cost_preview(ctx, inputs, task)
-            _output_settings(ctx, inputs, task)
+            _output_settings(ctx, inputs, task, stored)
             _advanced_settings(ctx, inputs, stored)
 
         if config_mode != "reset":
@@ -139,6 +141,13 @@ class OpenAIInference(foo.Operator):
                 )
                 return
 
+        # -- Configure plugin logging --
+        configure_logging(
+            enabled=params.get("enable_logging", False),
+            level=params.get("log_level", "INFO"),
+            log_file=params.get("log_file", ""),
+        )
+
         # Resolve classes from field picker if applicable
         _resolve_classes_from_field(ctx, params)
 
@@ -148,9 +157,6 @@ class OpenAIInference(foo.Operator):
         except Exception as e:
             yield _error(ctx, str(e))
             return
-
-        if params.get("temperature") is None:
-            engine.temperature = task.default_temperature
 
         batch_size: int = params.get("batch_size", _DEFAULTS["batch_size"])
         image_detail: str = params.get(
@@ -170,6 +176,16 @@ class OpenAIInference(foo.Operator):
             ctx.dataset, params["task"], params.get("overwrite_last", False)
         )
 
+        logger.info(
+            "Starting %s inference: model=%s, samples=%d, "
+            "batch_size=%d, field=%s",
+            params["task"],
+            params["model"],
+            total,
+            batch_size,
+            field_name,
+        )
+
         # Build metadata for optional per-label logging
         log_metadata: bool = params.get("log_metadata", False)
         full_prompt = ""
@@ -179,9 +195,7 @@ class OpenAIInference(foo.Operator):
                 full_prompt += f"[system] {task.system_prompt}\n"
             full_prompt += f"[user] {task.prompt}"
             infer_cfg = {
-                "temperature": engine.temperature,
-                "max_tokens": engine.max_tokens,
-                "top_p": engine.top_p,
+                **engine.completion_kwargs,
                 "batch_size": batch_size,
                 "coordinate_format": task.coordinate_format,
                 "box_format": task.box_format,
@@ -212,7 +226,11 @@ class OpenAIInference(foo.Operator):
 
         # Process in batches
         processed = 0
-        total_errors = 0
+        api_errors = 0
+        parse_errors = 0
+        # Collect first N error samples for the run summary
+        error_samples: list[dict[str, str]] = []
+        max_error_samples = 10
 
         for i in range(0, total, batch_size):
             end = i + batch_size
@@ -220,7 +238,9 @@ class OpenAIInference(foo.Operator):
             batch_paths = filepaths[i:end]
             batch_widths = widths[i:end]
             batch_heights = heights[i:end]
+            batch_num = i // batch_size + 1
 
+            logger.debug("Batch %d: encoding %d images", batch_num, len(batch_ids))
             image_contents = build_image_contents(
                 batch_paths,
                 max_workers=max_workers,
@@ -229,6 +249,7 @@ class OpenAIInference(foo.Operator):
             batch_messages = [
                 task.build_messages(img) for img in image_contents
             ]
+            logger.debug("Batch %d: sending %d requests", batch_num, len(batch_messages))
             responses = engine.infer_batch(
                 batch_messages, response_model=response_model
             )
@@ -239,8 +260,14 @@ class OpenAIInference(foo.Operator):
                 batch_ids, responses, batch_widths, batch_heights
             ):
                 if isinstance(resp, Exception):
-                    errors[sid] = f"{type(resp).__name__}: {resp}"
-                    total_errors += 1
+                    err_msg = f"[API] {type(resp).__name__}: {resp}"
+                    errors[sid] = err_msg
+                    api_errors += 1
+                    logger.warning("Sample %s API error: %s", sid, err_msg)
+                    if len(error_samples) < max_error_samples:
+                        error_samples.append(
+                            {"id": sid, "stage": "api", "error": err_msg}
+                        )
                     continue
                 try:
                     label = task.parse_response(
@@ -252,15 +279,29 @@ class OpenAIInference(foo.Operator):
                         label.infer_cfg = infer_cfg
                     results[sid] = label
                 except Exception as e:
-                    errors[sid] = f"{type(e).__name__}: {e}"
-                    total_errors += 1
+                    err_msg = f"[Parse] {type(e).__name__}: {e}"
+                    errors[sid] = err_msg
+                    parse_errors += 1
+                    logger.warning("Sample %s parse error: %s", sid, err_msg)
+                    if len(error_samples) < max_error_samples:
+                        error_samples.append(
+                            {"id": sid, "stage": "parse", "error": err_msg}
+                        )
 
             _write_batch_results(ctx.dataset, field_name, results, errors)
 
             processed += len(batch_ids)
+            total_err = api_errors + parse_errors
             progress_label = f"{processed}/{total} samples"
-            if total_errors:
-                progress_label += f" ({total_errors} errors)"
+            if total_err:
+                progress_label += f" ({total_err} errors)"
+
+            logger.info(
+                "Batch %d complete: %d ok, %d errors",
+                batch_num,
+                len(results),
+                len(errors),
+            )
 
             if ctx.delegated:
                 ctx.set_progress(
@@ -272,15 +313,30 @@ class OpenAIInference(foo.Operator):
                     dict(progress=processed / total, label=progress_label),
                 )
 
-        # Persist run metadata and settings
+        # -- Run summary (always written) --
+        total_err = api_errors + parse_errors
+        summary = summarise_errors(
+            api_errors=api_errors,
+            parse_errors=parse_errors,
+            total=total,
+            error_samples=error_samples,
+        )
+        runs: dict[str, Any] = ctx.dataset.info.get("openai_runs", {})
+        run_entry: dict[str, Any] = {"summary": summary}
         if log_metadata:
-            runs: dict[str, Any] = ctx.dataset.info.get("openai_runs", {})
-            runs[field_name] = {
-                "model_name": params["model"],
-                "prompt": full_prompt,
-                "infer_cfg": infer_cfg,
-            }
-            ctx.dataset.info["openai_runs"] = runs
+            run_entry["model_name"] = params["model"]
+            run_entry["prompt"] = full_prompt
+            run_entry["infer_cfg"] = infer_cfg
+        runs[field_name] = run_entry
+        ctx.dataset.info["openai_runs"] = runs
+
+        logger.info(
+            "Run complete: %d/%d succeeded, %d API errors, %d parse errors",
+            total - total_err,
+            total,
+            api_errors,
+            parse_errors,
+        )
 
         save_global_config(params)
         ctx.dataset.info["_openai_config"] = pick_params(
@@ -384,6 +440,34 @@ def _error(ctx: Any, message: str) -> Any:
     return ctx.trigger("set_progress", {"progress": 0, "label": label})
 
 
+def _fmt_usd(value: float) -> str:
+    """Format a dollar amount with dynamic precision.
+
+    Uses just enough decimal places to show two significant digits in
+    the fractional part, clamped to 2-6 decimals.  For example::
+
+        0.0000012  -> "$0.0000012"
+        0.0015     -> "$0.0015"
+        0.19       -> "$0.19"
+        3.5        -> "$3.50"
+    """
+    if value < 0.01:
+        if value == 0:
+            return "$0.00"
+        # Show enough decimals to reveal at least 2 significant figures
+        # e.g. 0.00097 -> 5 decimals, 0.0000012 -> 7 decimals
+        s = f"{value:.10f}"
+        dot = s.index(".")
+        first_sig = next(
+            (i for i in range(dot + 1, len(s)) if s[i] != "0"), len(s) - 1
+        )
+        decimals = max(first_sig - dot + 1, 4)
+        return f"${value:.{decimals}f}"
+    if value < 1.0:
+        return f"${value:.4f}"
+    return f"${value:.2f}"
+
+
 def _resolve_config(ctx: Any) -> dict[str, Any]:
     """Merge dataset config > global config > ``_DEFAULTS``."""
     merged = dict(_DEFAULTS)
@@ -400,23 +484,51 @@ def _create_engine(
 ) -> tuple[OpenAIEngine, str]:
     """Build an ``OpenAIEngine`` from operator params and secrets.
 
+    Resolution order for the API key:
+
+    1. Explicit ``api_key`` in operator params (advanced settings).
+    2. ``FIFTYONE_OPENAI_API_KEY`` from FiftyOne plugin secrets / env.
+    3. ``OPENAI_API_KEY`` from FiftyOne plugin secrets / env.
+
+    Both secret names are declared in ``fiftyone.yml`` so FiftyOne
+    resolves them from environment variables automatically via
+    ``ctx.secrets``.  An unset secret returns an empty string, so we
+    treat empty strings as missing.
+
     Returns ``(engine, api_key)``.
 
     Raises:
         ValueError: If no API key can be resolved.
     """
-    api_key: str | None = (
+    api_key: str = (
         params.get("api_key")
-        or secrets.get("FIFTYONE_OPENAI_API_KEY", None)
-        or os.environ.get("OPENAI_API_KEY")
+        or secrets["FIFTYONE_OPENAI_API_KEY"]
+        or secrets["OPENAI_API_KEY"]
+        or ""
     )
     if not api_key:
         raise ValueError(
-            "No API key configured. Set FIFTYONE_OPENAI_API_KEY in"
-            " FiftyOne secrets, OPENAI_API_KEY in your environment,"
-            " or provide an API key in the advanced settings."
+            "No API key configured. Set FIFTYONE_OPENAI_API_KEY or"
+            " OPENAI_API_KEY as an environment variable, or provide"
+            " an API key in the advanced settings."
         )
 
+    # Build completion kwargs — only include values the user explicitly set.
+    # Omitted params let the OpenAI SDK / model use their own defaults,
+    # avoiding errors like "Unsupported parameter: 'max_tokens'".
+    completion_kwargs: dict[str, Any] = {}
+    if params.get("temperature") is not None:
+        completion_kwargs["temperature"] = params["temperature"]
+    if params.get("max_completion_tokens") is not None:
+        completion_kwargs["max_completion_tokens"] = params[
+            "max_completion_tokens"
+        ]
+    if params.get("top_p") is not None:
+        completion_kwargs["top_p"] = params["top_p"]
+    if params.get("seed") is not None:
+        completion_kwargs["seed"] = params["seed"]
+
+    timeout_val = params.get("timeout")
     engine = OpenAIEngine(
         model=params["model"],
         api_key=api_key,
@@ -424,10 +536,8 @@ def _create_engine(
         max_concurrent=params.get(
             "max_concurrent", _DEFAULTS["max_concurrent"]
         ),
-        temperature=params.get("temperature", None),
-        max_tokens=params.get("max_tokens", _DEFAULTS["max_tokens"]),
-        top_p=params.get("top_p", _DEFAULTS["top_p"]),
-        seed=params.get("seed", None),
+        timeout=float(timeout_val) if timeout_val else None,
+        **completion_kwargs,
     )
     return engine, api_key
 
@@ -609,7 +719,7 @@ def _json_config_mode(ctx: Any, inputs: types.Object) -> None:
             "**Model:** `model`, `base_url`\n\n"
             "**Task:** `task`, `classes`, `question`, `prompt`, "
             "`system_prompt`, `prompt_override`\n\n"
-            "**Advanced:** `temperature`, `max_tokens`, `top_p`, "
+            "**Advanced:** `temperature`, `max_completion_tokens`, `top_p`, "
             "`seed`, `batch_size`, `max_concurrent`, `max_workers`, "
             "`image_detail`, `coordinate_format`, `box_format`",
             name="params_ref",
@@ -670,13 +780,21 @@ def _task_settings(
             description="Question to ask about each image",
         )
 
-    inputs.str(
-        "prompt_override",
-        label="Prompt Override",
-        required=False,
-        default=stored.get("prompt_override", ""),
-        description="Override the default prompt for this task",
+    inputs.bool(
+        "show_prompt_override",
+        label="Custom prompt",
+        default=bool(stored.get("prompt_override")),
+        view=types.SwitchView(),
     )
+    if ctx.params.get("show_prompt_override", False):
+        inputs.str(
+            "prompt_override",
+            label="Prompt Override",
+            required=False,
+            default=stored.get("prompt_override", ""),
+            description="Override the default prompt for this task",
+            view=types.TextView(),
+        )
 
 
 def _class_source_selector(
@@ -788,13 +906,13 @@ def _cost_preview(
     if not model or not task:
         return
 
-    if OpenAIEngine.get_model_info(model) is None:
+    if get_model_info(model) is None:
         inputs.view(
             "cost_notice",
             types.Notice(
                 label=(
                     f"Cost preview unavailable: '{model}' not found in"
-                    " LiteLLM pricing data"
+                    " pricing data"
                 )
             ),
         )
@@ -811,29 +929,32 @@ def _cost_preview(
     except Exception:
         num_samples = ctx.dataset.count() if ctx.dataset else 0
 
-    estimate = OpenAIEngine.estimate_cost(
+    est = estimate_cost(
         model=model,
         num_samples=num_samples,
         est_input_tokens=input_tokens,
         est_output_tokens=output_tokens,
     )
-    if not estimate:
+    if not est:
         return
 
-    per_img = estimate["per_image_cost"]
-    total = estimate["total_cost"]
+    per_img = est["per_image_cost"]
+    total = est["total_cost"]
     label = (
-        f"Estimated cost: ~${per_img:.5f}/image,"
-        f" ~${total:.4f} total for {num_samples} samples"
+        f"Estimated cost: {_fmt_usd(per_img)}/image,"
+        f" {_fmt_usd(total)} total for {num_samples} samples"
     )
     view_type = types.Warning if total > 1.0 else types.Notice
     inputs.view("cost_estimate", view_type(label=label))
 
 
 def _output_settings(
-    ctx: Any, inputs: types.Object, task: str | None
+    ctx: Any,
+    inputs: types.Object,
+    task: str | None,
+    stored: dict[str, Any],
 ) -> None:
-    """Add output-field and metadata-logging settings to the form."""
+    """Add output-field, metadata-logging, and logging settings."""
     if not task or not ctx.dataset:
         return
 
@@ -875,6 +996,8 @@ def _output_settings(
         ),
     )
 
+    _logging_settings(ctx, inputs, stored)
+
 
 def _advanced_settings(
     ctx: Any, inputs: types.Object, stored: dict[str, Any]
@@ -899,15 +1022,20 @@ def _advanced_settings(
         default=stored.get("temperature"),
         min=0.0,
         max=2.0,
-        description="Sampling temperature (leave empty for task default)",
+        description=(
+            "Sampling temperature (leave empty for model default)"
+        ),
     )
     inputs.int(
-        "max_tokens",
-        label="Max Tokens",
-        default=stored.get("max_tokens"),
+        "max_completion_tokens",
+        label="Max Completion Tokens",
+        default=stored.get("max_completion_tokens"),
         min=1,
-        max=4096,
-        description="Maximum tokens to generate per sample",
+        max=16384,
+        description=(
+            "Maximum tokens to generate per sample"
+            " (leave empty for model default)"
+        ),
     )
     inputs.float(
         "top_p",
@@ -915,6 +1043,7 @@ def _advanced_settings(
         default=stored.get("top_p"),
         min=0.0,
         max=1.0,
+        description="Nucleus sampling (leave empty for model default)",
     )
     inputs.int(
         "seed",
@@ -948,6 +1077,17 @@ def _advanced_settings(
         min=1,
         max=32,
         description="Thread pool size for parallel image loading/encoding",
+    )
+    inputs.int(
+        "timeout",
+        label="Request Timeout (seconds)",
+        default=stored.get("timeout"),
+        min=10,
+        max=600,
+        description=(
+            "Per-request timeout in seconds"
+            " (leave empty for SDK default)"
+        ),
     )
 
     _image_detail_selector(inputs, stored)
@@ -1001,6 +1141,59 @@ def _base_url_input(
     )
 
 
+def _logging_settings(
+    ctx: Any, inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Add opt-in logging controls to the form.
+
+    Settings are persisted so they survive app restarts.
+    """
+    inputs.bool(
+        "enable_logging",
+        label="Enable logging",
+        default=stored.get("enable_logging", False),
+        view=types.SwitchView(),
+        description="Log inference progress and errors to stderr and optionally a file",
+    )
+    if not ctx.params.get("enable_logging", False):
+        return
+
+    level_dropdown = types.Dropdown()
+    level_dropdown.add_choice(
+        "INFO",
+        label="INFO (Recommended)",
+        description="Run progress and error summaries",
+    )
+    level_dropdown.add_choice(
+        "DEBUG",
+        label="DEBUG",
+        description="Verbose per-batch and per-sample details",
+    )
+    level_dropdown.add_choice(
+        "WARNING",
+        label="WARNING",
+        description="Only warnings and errors",
+    )
+    inputs.enum(
+        "log_level",
+        level_dropdown.values(),
+        default=stored.get("log_level", "INFO"),
+        label="Log Level",
+        view=level_dropdown,
+    )
+    inputs.str(
+        "log_file",
+        label="Log File (Optional)",
+        default=stored.get("log_file", ""),
+        description=(
+            "File path or directory for log output."
+            " Directories get a timestamped filename;"
+            " existing files auto-increment (run.log → run2.log)."
+            " Leave empty for stderr only."
+        ),
+    )
+
+
 def _detection_format_selectors(
     inputs: types.Object, stored: dict[str, Any]
 ) -> None:
@@ -1010,7 +1203,6 @@ def _detection_format_selectors(
     coord_dropdown.add_choice(
         "normalized_1000", label="0-1000 (normalized)"
     )
-    coord_dropdown.add_choice("pixel", label="Pixel coordinates")
     inputs.enum(
         "coordinate_format",
         coord_dropdown.values(),
