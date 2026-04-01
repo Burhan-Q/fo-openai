@@ -12,6 +12,7 @@ Internal reference for the `@Burhan-Q/fo-openai` FiftyOne plugin.
 ## Operations
 
 - [Tasks](operations/tasks.md) — the 6 supported tasks, prompts, output types
+- [Exemplars](operations/exemplars.md) — few-shot exemplar samples, selection, serialization, cost
 - [Configuration](operations/configuration.md) — 3-mode config, persistence, secrets
 - [Cost Estimation](operations/cost-estimation.md) — pricing data source, token estimates, display
 - [Logging](operations/logging.md) — opt-in logging, file paths, error classification, run summaries
@@ -22,3 +23,4 @@ Internal reference for the `@Burhan-Q/fo-openai` FiftyOne plugin.
 - [Design Decisions](development/decisions.md) — key choices made during development and why
 - [Known Issues](development/known-issues.md) — current limitations, FiftyOne UI constraints
 - [Testing](development/testing.md) — how to test the plugin locally
+- [Few-Shot Exemplars Design](development/2026-03-31-few-shot-exemplars-design.md) — design spec for the exemplar feature
