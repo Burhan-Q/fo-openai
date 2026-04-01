@@ -102,6 +102,34 @@ IMAGE_TOKEN_COUNTS: dict[str, int] = {
 # Base prompt text token estimate (system + user prompt text, no image)
 PROMPT_TEXT_TOKENS: int = 50
 
+# Bumped prompt token estimate when few-shot exemplars are active
+# (accounts for the preamble text added to the system prompt)
+PROMPT_TEXT_TOKENS_FEWSHOT: int = 70
+
+# Estimated tokens per exemplar (framing text + serialized JSON)
+EXEMPLAR_TEXT_TOKENS: int = 30
+
+# Few-shot preamble prepended to the system prompt when exemplars are
+# provided.  The ``{task_verb}`` placeholder is replaced with the
+# task-specific action (e.g. "classify", "caption", "detect objects in").
+_FEWSHOT_PREAMBLE: str = (
+    "You will first be shown REFERENCE EXAMPLES. These examples "
+    "demonstrate the EXACT expected output format and labeling quality. "
+    "DO NOT describe or analyze the example images. They are provided "
+    "ONLY as reference for how you should respond to the FINAL image. "
+    "After the examples, you will receive one image to {task_verb}. "
+    "Apply the same approach shown in the examples.\n\n"
+)
+
+_TASK_VERBS: dict[str, str] = {
+    "caption": "caption",
+    "classify": "classify",
+    "tag": "tag",
+    "detect": "detect objects in",
+    "vqa": "answer a question about",
+    "ocr": "extract text from",
+}
+
 
 class TaskConfig:
     """Builds prompts, Pydantic response models, and parses LLM responses."""
@@ -280,13 +308,37 @@ class TaskConfig:
             raw_prompt.format(**fmt_kwargs) if fmt_kwargs else raw_prompt
         )
 
-    def build_messages(self, image_content: dict[str, Any]) -> list[dict[str, Any]]:
-        """Build OpenAI-format chat messages for a single image."""
+    def build_messages(
+        self,
+        image_content: dict[str, Any],
+        exemplar_messages: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Build OpenAI-format chat messages for a single image.
+
+        Args:
+            image_content: Image content dict (base64 or URL) for the
+                target sample.
+            exemplar_messages: Optional list of pre-built user/assistant
+                message pairs from :func:`exemplars.build_exemplar_messages`.
+                When provided, the system prompt gains a few-shot preamble
+                and the exemplar messages are inserted before the final
+                user query.
+        """
         messages: list[dict[str, Any]] = []
-        if self.system_prompt:
-            messages.append(
-                {"role": "system", "content": self.system_prompt}
-            )
+
+        # System prompt — prepend few-shot preamble when exemplars present
+        system = self.system_prompt
+        if exemplar_messages and system:
+            verb = _TASK_VERBS.get(self.task, self.task)
+            system = _FEWSHOT_PREAMBLE.format(task_verb=verb) + system
+        if system:
+            messages.append({"role": "system", "content": system})
+
+        # Exemplar pairs (user image + assistant JSON) if provided
+        if exemplar_messages:
+            messages.extend(exemplar_messages)
+
+        # Final user message — the actual target image to process
         messages.append(
             {
                 "role": "user",

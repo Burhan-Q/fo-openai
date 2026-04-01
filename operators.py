@@ -15,6 +15,7 @@ from ._log import get_logger, summarise_errors
 from ._pricing import estimate_cost, get_model_info
 from .engine import OpenAIEngine
 from .tasks import (
+    EXEMPLAR_TEXT_TOKENS,
     IMAGE_TOKEN_COUNTS,
     OUTPUT_TOKEN_ESTIMATES,
     PROMPT_TEXT_TOKENS,
@@ -68,7 +69,7 @@ class OpenAIInference(foo.Operator):
 
         stored = _resolve_config(ctx)
 
-        # Config mode selector
+        # Config mode selector (always visible)
         mode_radio = types.RadioGroup(orientation="horizontal")
         mode_radio.add_choice("manual", label="Configure manually")
         mode_radio.add_choice("json", label="Paste JSON config")
@@ -95,12 +96,43 @@ class OpenAIInference(foo.Operator):
                 ),
             )
         else:
-            _model_selector(ctx, inputs, stored)
-            task = _task_selector(ctx, inputs, stored)
-            _task_settings(ctx, inputs, task, stored)
-            _cost_preview(ctx, inputs, task)
-            _output_settings(ctx, inputs, task, stored)
-            _advanced_settings(ctx, inputs, stored)
+            # -- Cost summary ABOVE tabs (persistent banner) --
+            task = ctx.params.get("task")
+            _cost_summary(ctx, inputs, task)
+
+            # -- 5-tab layout --
+            tabs = types.TabsView()
+            for key, label in [
+                ("model", "Model"),
+                ("task", "Task"),
+                ("exemplars", "Exemplars"),
+                ("logging", "Logging"),
+                ("advanced", "Advanced"),
+            ]:
+                tabs.add_choice(key, label=label)
+
+            inputs.enum(
+                "active_tab",
+                tabs.values(),
+                default="model",
+                label="Settings",
+                view=tabs,
+            )
+            active_tab: str = ctx.params.get("active_tab", "model")
+
+            if active_tab == "model":
+                _model_selector(ctx, inputs, stored)
+                _base_url_input(inputs, stored)
+            elif active_tab == "task":
+                task = _task_selector(ctx, inputs, stored)
+                _task_settings(ctx, inputs, task, stored)
+                _output_settings(ctx, inputs, task, stored)
+            elif active_tab == "exemplars":
+                _exemplar_tab(ctx, inputs, stored)
+            elif active_tab == "logging":
+                _logging_settings(ctx, inputs, stored)
+            elif active_tab == "advanced":
+                _advanced_settings(ctx, inputs, stored)
 
         if config_mode != "reset":
             inputs.view_target(ctx)
@@ -171,6 +203,39 @@ class OpenAIInference(foo.Operator):
         max_workers: int = params.get("max_workers", _DEFAULTS["max_workers"])
 
         response_model = task.get_response_model()
+
+        # -- Resolve exemplars (if enabled) --
+        exemplar_messages: list[dict[str, Any]] | None = None
+        if params.get("exemplars_enabled"):
+            from .exemplars import build_exemplar_messages, resolve_exemplars
+
+            exemplar_view = resolve_exemplars(
+                dataset=ctx.dataset,
+                source=params["exemplar_source"],
+                view_name=params.get("exemplar_view_name"),
+                sample_ids=params.get("exemplar_sample_ids"),
+                tag=params.get("exemplar_tag"),
+                field_name=params.get("exemplar_field_name"),
+                field_value=params.get("exemplar_field_value"),
+            )
+            exemplar_messages = build_exemplar_messages(
+                exemplar_view=exemplar_view,
+                label_field=params["exemplar_label_field"],
+                task=params["task"],
+                classes=normalize_classes(params.get("classes")),
+                coordinate_format=params.get(
+                    "coordinate_format", _DEFAULTS["coordinate_format"]
+                ),
+                box_format=params.get(
+                    "box_format", _DEFAULTS["box_format"]
+                ),
+                image_detail=image_detail,
+                max_workers=max_workers,
+            )
+            logger.info(
+                "Exemplars: %d message pairs built",
+                len(exemplar_messages) // 2,
+            )
 
         field_name = _resolve_field_name(
             ctx.dataset, params["task"], params.get("overwrite_last", False)
@@ -247,7 +312,8 @@ class OpenAIInference(foo.Operator):
                 image_detail=image_detail,
             )
             batch_messages = [
-                task.build_messages(img) for img in image_contents
+                task.build_messages(img, exemplar_messages=exemplar_messages)
+                for img in image_contents
             ]
             logger.debug("Batch %d: sending %d requests", batch_num, len(batch_messages))
             responses = engine.infer_batch(
@@ -327,6 +393,13 @@ class OpenAIInference(foo.Operator):
             run_entry["model_name"] = params["model"]
             run_entry["prompt"] = full_prompt
             run_entry["infer_cfg"] = infer_cfg
+        if params.get("exemplars_enabled") and exemplar_messages:
+            run_entry["exemplars_enabled"] = True
+            run_entry["exemplar_count"] = len(exemplar_messages) // 2
+            run_entry["exemplar_source"] = params.get("exemplar_source")
+            run_entry["exemplar_label_field"] = params.get(
+                "exemplar_label_field"
+            )
         runs[field_name] = run_entry
         ctx.dataset.info["openai_runs"] = runs
 
@@ -898,55 +971,6 @@ def _find_label_fields(
     ]
 
 
-def _cost_preview(
-    ctx: Any, inputs: types.Object, task: str | None
-) -> None:
-    """Show an inline cost estimate based on model, task, and view size."""
-    model: str | None = ctx.params.get("model")
-    if not model or not task:
-        return
-
-    if get_model_info(model) is None:
-        inputs.view(
-            "cost_notice",
-            types.Notice(
-                label=(
-                    f"Cost preview unavailable: '{model}' not found in"
-                    " pricing data"
-                )
-            ),
-        )
-        return
-
-    image_detail: str = ctx.params.get("image_detail", "auto")
-    input_tokens = PROMPT_TEXT_TOKENS + IMAGE_TOKEN_COUNTS.get(
-        image_detail, 765
-    )
-    output_tokens = OUTPUT_TOKEN_ESTIMATES.get(task, 60)
-
-    try:
-        num_samples = len(ctx.target_view())
-    except Exception:
-        num_samples = ctx.dataset.count() if ctx.dataset else 0
-
-    est = estimate_cost(
-        model=model,
-        num_samples=num_samples,
-        est_input_tokens=input_tokens,
-        est_output_tokens=output_tokens,
-    )
-    if not est:
-        return
-
-    per_img = est["per_image_cost"]
-    total = est["total_cost"]
-    label = (
-        f"Estimated cost: {_fmt_usd(per_img)}/image,"
-        f" {_fmt_usd(total)} total for {num_samples} samples"
-    )
-    view_type = types.Warning if total > 1.0 else types.Notice
-    inputs.view("cost_estimate", view_type(label=label))
-
 
 def _output_settings(
     ctx: Any,
@@ -996,26 +1020,11 @@ def _output_settings(
         ),
     )
 
-    _logging_settings(ctx, inputs, stored)
-
 
 def _advanced_settings(
     ctx: Any, inputs: types.Object, stored: dict[str, Any]
 ) -> None:
-    """Add collapsible advanced settings to the form."""
-    inputs.view(
-        "adv_header",
-        types.Header(label="Advanced Settings", divider=True),
-    )
-    inputs.bool(
-        "show_advanced",
-        label="Show advanced settings",
-        default=False,
-        view=types.SwitchView(),
-    )
-    if not ctx.params.get("show_advanced", False):
-        return
-
+    """Add advanced settings fields to the form."""
     inputs.float(
         "temperature",
         label="Temperature",
@@ -1091,10 +1100,20 @@ def _advanced_settings(
     )
 
     _image_detail_selector(inputs, stored)
-    _base_url_input(inputs, stored)
 
     if ctx.params.get("task") == "detect":
         _detection_format_selectors(inputs, stored)
+
+    inputs.str(
+        "system_prompt",
+        label="System Prompt Override",
+        default=stored.get("system_prompt", ""),
+        description=(
+            "Custom system prompt. When exemplars are active, a"
+            " few-shot preamble is automatically prepended."
+        ),
+        view=types.TextFieldView(multiline=True),
+    )
 
 
 def _image_detail_selector(
@@ -1224,3 +1243,498 @@ def _detection_format_selectors(
         view=box_dropdown,
         description="Bounding box format produced by the model",
     )
+
+
+# ---------------------------------------------------------------------------
+# Exemplar tab
+# ---------------------------------------------------------------------------
+
+# Compatible field types per task for exemplar label field selection
+_EXEMPLAR_FIELD_TYPES: dict[str, set[str]] = {
+    "classify": {"Classification"},
+    "tag": {"Classifications", "Classification"},
+    "caption": {"Classification"},
+    "detect": {"Detections"},
+    "vqa": {"Classification"},
+    "ocr": {"Classification"},
+}
+
+
+def _exemplar_tab(
+    ctx: Any, inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Render the Exemplars tab contents.
+
+    Shows an enable toggle (default OFF). When enabled, presents the
+    exemplar source selector, label field picker, and a live preview
+    of resolved exemplar count and token cost.
+
+    Args:
+        ctx: Operator execution context.
+        inputs: Form object to add fields to.
+        stored: Merged configuration from persistence layers.
+    """
+    inputs.bool(
+        "exemplars_enabled",
+        label="Enable few-shot exemplars",
+        default=stored.get("exemplars_enabled", False),
+        view=types.SwitchView(),
+    )
+
+    if not ctx.params.get("exemplars_enabled", False):
+        inputs.view(
+            "exemplar_info",
+            types.Notice(
+                label=(
+                    "Provide labeled samples as few-shot examples to"
+                    " guide model output quality. Toggle on to configure."
+                )
+            ),
+        )
+        return
+
+    # Exemplar source selector
+    source_radio = types.RadioGroup()
+    for key, label in [
+        ("saved_view", "Saved view"),
+        ("sample_ids", "Sample IDs"),
+        ("tag", "Tag"),
+        ("field", "Field"),
+    ]:
+        source_radio.add_choice(key, label=label)
+
+    inputs.enum(
+        "exemplar_source",
+        source_radio.values(),
+        default=stored.get("exemplar_source", "saved_view"),
+        label="Exemplar Source",
+        view=source_radio,
+    )
+
+    source: str = ctx.params.get("exemplar_source", "saved_view")
+
+    # Source-specific fields (only show the active source's input)
+    if source == "saved_view":
+        _exemplar_saved_view_picker(ctx, inputs, stored)
+    elif source == "sample_ids":
+        inputs.str(
+            "exemplar_sample_ids",
+            label="Sample IDs",
+            default=stored.get("exemplar_sample_ids", ""),
+            description="Comma-separated sample IDs to use as exemplars",
+        )
+    elif source == "tag":
+        inputs.str(
+            "exemplar_tag",
+            label="Tag",
+            default=stored.get("exemplar_tag", ""),
+            description="Tag name to select exemplar samples",
+        )
+    elif source == "field":
+        _exemplar_field_picker(ctx, inputs, stored)
+
+    # Exemplar label field picker
+    _exemplar_label_field_picker(ctx, inputs, stored)
+
+    # Exemplar preview (count + cost estimate)
+    _exemplar_preview(ctx, inputs)
+
+
+def _exemplar_saved_view_picker(
+    ctx: Any, inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Add a dropdown of saved views for exemplar source selection."""
+    if not ctx.dataset:
+        return
+    saved_views = ctx.dataset.list_saved_views()
+    if not saved_views:
+        inputs.view(
+            "no_saved_views",
+            types.Warning(label="No saved views found in this dataset"),
+        )
+        return
+
+    view_dropdown = types.Dropdown()
+    for name in saved_views:
+        view_dropdown.add_choice(name, label=name)
+
+    inputs.enum(
+        "exemplar_view_name",
+        view_dropdown.values(),
+        default=stored.get("exemplar_view_name", ""),
+        label="Saved View",
+        view=view_dropdown,
+    )
+
+
+def _exemplar_field_picker(
+    ctx: Any, inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Add field + value inputs for field-based exemplar source."""
+    if not ctx.dataset:
+        return
+    schema = ctx.dataset.get_field_schema()
+    field_dropdown = types.Dropdown()
+    for name in sorted(schema.keys()):
+        field_dropdown.add_choice(name, label=name)
+
+    inputs.enum(
+        "exemplar_field_name",
+        field_dropdown.values(),
+        default=stored.get("exemplar_field_name", ""),
+        label="Field Name",
+        view=field_dropdown,
+    )
+
+    field_name = ctx.params.get("exemplar_field_name")
+    if not field_name:
+        return
+
+    # Auto-detect boolean fields — skip value input
+    field_obj = schema.get(field_name)
+    if field_obj is not None and getattr(field_obj, "ftype", None) is not None:
+        from fiftyone.core.fields import BooleanField
+        if isinstance(field_obj, BooleanField):
+            return
+
+    inputs.str(
+        "exemplar_field_value",
+        label="Match Value",
+        default=stored.get("exemplar_field_value", ""),
+        description="Value to match (e.g., 'true', 'exemplar')",
+    )
+
+
+def _exemplar_label_field_picker(
+    ctx: Any, inputs: types.Object, stored: dict[str, Any]
+) -> None:
+    """Add a dropdown of label fields compatible with the selected task.
+
+    Args:
+        ctx: Operator execution context.
+        inputs: Form object to add fields to.
+        stored: Merged configuration from persistence layers.
+    """
+    if not ctx.dataset:
+        return
+
+    task: str | None = ctx.params.get("task")
+    compat_types = _EXEMPLAR_FIELD_TYPES.get(task or "", set())
+
+    label_fields = _find_label_fields(ctx.dataset)
+    # Filter to task-compatible types (show all if task not yet selected)
+    if compat_types:
+        label_fields = [
+            (name, ftype) for name, ftype in label_fields
+            if ftype in compat_types
+        ]
+
+    if not label_fields:
+        msg = "No compatible label fields found"
+        if task:
+            msg += f" for task '{task}'"
+        inputs.view("no_exemplar_fields", types.Warning(label=msg))
+        return
+
+    field_dropdown = types.Dropdown()
+    for name, ftype in label_fields:
+        field_dropdown.add_choice(name, label=f"{name} ({ftype})")
+
+    inputs.enum(
+        "exemplar_label_field",
+        field_dropdown.values(),
+        default=stored.get("exemplar_label_field", ""),
+        label="Exemplar Label Field",
+        view=field_dropdown,
+        description="Field containing the expected output for each exemplar",
+    )
+
+
+def _exemplar_preview(ctx: Any, inputs: types.Object) -> None:
+    """Show a preview of resolved exemplar count and token estimate.
+
+    Args:
+        ctx: Operator execution context.
+        inputs: Form object to add fields to.
+    """
+    source: str = ctx.params.get("exemplar_source", "saved_view")
+    label_field: str | None = ctx.params.get("exemplar_label_field")
+
+    if not label_field:
+        inputs.view(
+            "exemplar_warn",
+            types.Warning(label="Select an exemplar label field to continue"),
+        )
+        return
+
+    # Attempt to count exemplar samples
+    count = _count_exemplar_samples(ctx, source)
+    if count is None:
+        return
+    if count == 0:
+        inputs.view(
+            "exemplar_empty",
+            types.Warning(label="No exemplar samples resolved from this source"),
+        )
+        return
+
+    image_detail: str = ctx.params.get("image_detail", "auto")
+    img_tokens = IMAGE_TOKEN_COUNTS.get(image_detail, 765)
+    per_exemplar = img_tokens + EXEMPLAR_TEXT_TOKENS
+    total_overhead = count * per_exemplar
+
+    inputs.view(
+        "exemplar_count",
+        types.Notice(
+            label=(
+                f"{count} exemplar samples resolved. "
+                f"Each adds ~{per_exemplar} tokens per inference call "
+                f"(~{total_overhead} total tokens overhead per call)."
+            )
+        ),
+    )
+
+    if total_overhead > 5000:
+        inputs.view(
+            "exemplar_cost_warn",
+            types.Warning(
+                label=(
+                    f"High exemplar token overhead ({total_overhead} tokens/call). "
+                    f"Exemplar images are included in EVERY inference call. "
+                    f"Consider reducing exemplar count if cost is a concern."
+                )
+            ),
+        )
+
+
+def _count_exemplar_samples(ctx: Any, source: str) -> int | None:
+    """Attempt to count exemplar samples based on the current source config.
+
+    Returns count or ``None`` if source configuration is incomplete.
+    """
+    if not ctx.dataset:
+        return None
+    try:
+        if source == "saved_view":
+            name = ctx.params.get("exemplar_view_name")
+            if not name:
+                return None
+            return len(ctx.dataset.load_saved_view(name))
+        if source == "sample_ids":
+            ids_str = ctx.params.get("exemplar_sample_ids", "")
+            ids = [s.strip() for s in ids_str.split(",") if s.strip()]
+            return len(ids) if ids else None
+        if source == "tag":
+            tag = ctx.params.get("exemplar_tag", "").strip()
+            if not tag:
+                return None
+            return len(ctx.dataset.match_tags(tag))
+        if source == "field":
+            field_name = ctx.params.get("exemplar_field_name")
+            if not field_name:
+                return None
+            field_value = ctx.params.get("exemplar_field_value")
+            from fiftyone import ViewField as F
+            if not field_value:
+                return len(ctx.dataset.match(F(field_name) == True))  # noqa: E712
+            return len(ctx.dataset.match(F(field_name) == field_value))
+    except Exception:
+        return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Cost summary (always visible, outside tabs)
+# ---------------------------------------------------------------------------
+
+# Default cost warning threshold in USD
+_DEFAULT_COST_WARN: float = 5.0
+
+
+def _get_cost_warn_threshold() -> float:
+    """Read the cost warning threshold from env, defaulting to $5."""
+    import os
+    try:
+        return float(os.environ.get("FIFTYONE_OPENAI_COST_WARN", _DEFAULT_COST_WARN))
+    except (ValueError, TypeError):
+        return _DEFAULT_COST_WARN
+
+
+def _estimate_prompt_tokens(ctx: Any, task: str | None) -> int:
+    """Estimate text tokens for system prompt + user prompt.
+
+    Uses a rough 4-chars-per-token heuristic. Accounts for custom
+    prompts and long class lists, which can significantly exceed the
+    default ``PROMPT_TEXT_TOKENS`` constant.
+
+    Args:
+        ctx: Operator execution context (reads params).
+        task: Currently selected task, or ``None``.
+
+    Returns:
+        Estimated token count for prompt text (no image tokens).
+    """
+    text_len = 0
+    # System prompt (default or custom)
+    system = ctx.params.get("system_prompt", "")
+    if system:
+        text_len += len(system)
+    else:
+        # Default system prompts are ~60-120 chars
+        text_len += 100
+    # User prompt (default or custom override)
+    prompt = ctx.params.get("prompt_override") or ""
+    if prompt:
+        text_len += len(prompt)
+    else:
+        text_len += 60  # default task prompts
+    # Classes list (can be very long)
+    classes = ctx.params.get("classes", "")
+    if isinstance(classes, str) and classes:
+        text_len += len(classes)
+    elif isinstance(classes, list):
+        text_len += sum(len(str(c)) for c in classes)
+    # Question (VQA)
+    if task == "vqa":
+        text_len += len(ctx.params.get("question", ""))
+    # Rough token estimate: ~4 chars per token, with a floor
+    return max(PROMPT_TEXT_TOKENS, text_len // 4)
+
+
+def _fmt_tokens(n: int) -> str:
+    """Format a token count with comma separators for readability."""
+    return f"{n:,}"
+
+
+def _cost_summary(
+    ctx: Any, inputs: types.Object, task: str | None
+) -> None:
+    """Render a cost summary above the tabs as a persistent banner.
+
+    Inference and exemplar costs are computed independently so the
+    table rows are additive and the total is their sum. Includes a
+    Tokens/Call and Total Tokens column for usage visibility.
+
+    Args:
+        ctx: Operator execution context.
+        inputs: Form object to add fields to.
+        task: Currently selected task, or ``None``.
+    """
+    model: str | None = ctx.params.get("model")
+    if not model or not task:
+        inputs.view(
+            "cost_pending",
+            types.Notice(label="Select a model and task to see cost estimate"),
+        )
+        return
+
+    if get_model_info(model) is None:
+        inputs.view(
+            "cost_notice",
+            types.Notice(
+                label=(
+                    f"Cost preview unavailable: '{model}' not found in"
+                    " pricing data"
+                )
+            ),
+        )
+        return
+
+    image_detail: str = ctx.params.get("image_detail", "auto")
+    img_tokens = IMAGE_TOKEN_COUNTS.get(image_detail, 765)
+    output_tokens = OUTPUT_TOKEN_ESTIMATES.get(task, 60)
+    prompt_tokens = _estimate_prompt_tokens(ctx, task)
+
+    try:
+        num_samples = len(ctx.target_view())
+    except Exception:
+        num_samples = ctx.dataset.count() if ctx.dataset else 0
+
+    # -- Inference tokens & cost (without exemplars) --
+    infer_input_per_call = prompt_tokens + img_tokens
+    infer_tokens_per_call = infer_input_per_call + output_tokens
+    inference_est = estimate_cost(
+        model=model,
+        num_samples=num_samples,
+        est_input_tokens=infer_input_per_call,
+        est_output_tokens=output_tokens,
+    )
+    if not inference_est:
+        return
+
+    infer_per_sample = inference_est["per_image_cost"]
+    infer_total = inference_est["total_cost"]
+    input_cpt = inference_est.get("input_cost_per_token", 0)
+
+    # -- Exemplar tokens & cost (independent, input tokens only) --
+    exemplars_enabled = ctx.params.get("exemplars_enabled", False)
+    exemplar_count = 0
+    exemplar_tokens_per_call = 0
+    exemplar_per_sample = 0.0
+    exemplar_total = 0.0
+    if exemplars_enabled:
+        source = ctx.params.get("exemplar_source", "saved_view")
+        exemplar_count = _count_exemplar_samples(ctx, source) or 0
+        exemplar_tokens_per_call = exemplar_count * (img_tokens + EXEMPLAR_TEXT_TOKENS)
+        exemplar_per_sample = exemplar_tokens_per_call * input_cpt
+        exemplar_total = exemplar_per_sample * num_samples
+
+    # -- Combined totals --
+    grand_per_sample = infer_per_sample + exemplar_per_sample
+    grand_total = infer_total + exemplar_total
+    grand_tokens_per_call = infer_tokens_per_call + exemplar_tokens_per_call
+    grand_tokens_total = grand_tokens_per_call * num_samples
+
+    # Build markdown table with token columns
+    rows = [
+        "| | Tokens/Call | Total Tokens | Cost/Sample | Total Cost |",
+        "|---|--:|--:|--:|--:|",
+        (
+            f"| **Prompt** | {_fmt_tokens(prompt_tokens)} | "
+            f"{_fmt_tokens(prompt_tokens * num_samples)} | | |"
+        ),
+        (
+            f"| **Image** | {_fmt_tokens(img_tokens)} | "
+            f"{_fmt_tokens(img_tokens * num_samples)} | | |"
+        ),
+        (
+            f"| **Output** | {_fmt_tokens(output_tokens)} | "
+            f"{_fmt_tokens(output_tokens * num_samples)} | | |"
+        ),
+        (
+            f"| **Inference** | {_fmt_tokens(infer_tokens_per_call)} | "
+            f"{_fmt_tokens(infer_tokens_per_call * num_samples)} | "
+            f"{_fmt_usd(infer_per_sample)} | {_fmt_usd(infer_total)} |"
+        ),
+    ]
+
+    if exemplars_enabled and exemplar_count > 0:
+        rows.append(
+            f"| **Exemplars** ({exemplar_count}) | "
+            f"{_fmt_tokens(exemplar_tokens_per_call)} | "
+            f"{_fmt_tokens(exemplar_tokens_per_call * num_samples)} | "
+            f"{_fmt_usd(exemplar_per_sample)} | {_fmt_usd(exemplar_total)} |"
+        )
+
+    rows.append(
+        f"| **Total** | {_fmt_tokens(grand_tokens_per_call)} | "
+        f"**{_fmt_tokens(grand_tokens_total)}** | "
+        f"{_fmt_usd(grand_per_sample)} | **{_fmt_usd(grand_total)}** |"
+    )
+
+    rows.append(f"\n*{num_samples} samples*")
+
+    table_md = "\n".join(rows)
+
+    warn_threshold = _get_cost_warn_threshold()
+    if grand_total >= warn_threshold:
+        inputs.view(
+            "cost_warn",
+            types.Warning(
+                label=(
+                    f"Estimated total cost: {_fmt_usd(grand_total)}"
+                    f" (above ${warn_threshold:.0f} threshold)"
+                )
+            ),
+        )
+    inputs.md(table_md, name="cost_table")

@@ -32,6 +32,15 @@ _PERSIST_KEYS: list[str] = [
     "enable_logging",
     "log_level",
     "log_file",
+    # Exemplar settings
+    "exemplars_enabled",
+    "exemplar_source",
+    "exemplar_view_name",
+    "exemplar_sample_ids",
+    "exemplar_tag",
+    "exemplar_field_name",
+    "exemplar_field_value",
+    "exemplar_label_field",
 ]
 
 
