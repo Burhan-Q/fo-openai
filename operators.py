@@ -37,7 +37,7 @@ _DEFAULTS: dict[str, Any] = {
     "batch_size": 8,
     "max_concurrent": 16,
     "max_workers": 4,
-    "coordinate_format": "normalized_1",
+    "coordinate_format": "pixel",
     "box_format": "xyxy",
     "image_detail": "auto",
 }
@@ -97,7 +97,7 @@ class OpenAIInference(foo.Operator):
             )
         else:
             # -- Cost summary ABOVE tabs (persistent banner) --
-            task = ctx.params.get("task")
+            task = ctx.params.get("task") or stored.get("task")
             _cost_summary(ctx, inputs, task)
 
             # -- 5-tab layout --
@@ -277,11 +277,10 @@ class OpenAIInference(foo.Operator):
                     key_field="id",
                 )
 
-        # Collect image dimensions for pixel coordinate normalisation
-        need_dims = (
-            task.task == "detect" and task.coordinate_format == "pixel"
-        )
-        if need_dims:
+        # Collect image dimensions for detection tasks — included in the
+        # prompt so the model can ground coordinates to the original image,
+        # and used during parse_response() for pixel coordinate conversion.
+        if task.task == "detect":
             view.compute_metadata()
             widths: list[float | None] = view.values("metadata.width")
             heights: list[float | None] = view.values("metadata.height")
@@ -312,8 +311,15 @@ class OpenAIInference(foo.Operator):
                 image_detail=image_detail,
             )
             batch_messages = [
-                task.build_messages(img, exemplar_messages=exemplar_messages)
-                for img in image_contents
+                task.build_messages(
+                    img,
+                    exemplar_messages=exemplar_messages,
+                    image_width=w,
+                    image_height=h,
+                )
+                for img, w, h in zip(
+                    image_contents, batch_widths, batch_heights
+                )
             ]
             logger.debug("Batch %d: sending %d requests", batch_num, len(batch_messages))
             responses = engine.infer_batch(
@@ -869,6 +875,9 @@ def _task_settings(
             view=types.TextFieldView(multiline=True),
         )
 
+    if task == "detect":
+        _detection_format_selectors(inputs, stored)
+
 
 def _class_source_selector(
     ctx: Any, inputs: types.Object, stored: dict[str, Any]
@@ -1012,7 +1021,7 @@ def _output_settings(
     inputs.bool(
         "log_metadata",
         label="Log run metadata",
-        default=False,
+        default=stored.get("log_metadata", False),
         view=types.SwitchView(),
         description=(
             "Store model name, prompt, and inference config"
@@ -1100,9 +1109,6 @@ def _advanced_settings(
     )
 
     _image_detail_selector(inputs, stored)
-
-    if ctx.params.get("task") == "detect":
-        _detection_format_selectors(inputs, stored)
 
     inputs.str(
         "system_prompt",
@@ -1218,9 +1224,20 @@ def _detection_format_selectors(
 ) -> None:
     """Add coordinate-format and box-format dropdowns for detection tasks."""
     coord_dropdown = types.Dropdown()
-    coord_dropdown.add_choice("normalized_1", label="0-1 (normalized)")
     coord_dropdown.add_choice(
-        "normalized_1000", label="0-1000 (normalized)"
+        "pixel",
+        label="Pixel (Recommended)",
+        description="Integer pixel coordinates grounded to original image dimensions",
+    )
+    coord_dropdown.add_choice(
+        "normalized_1000",
+        label="0-1000 integers",
+        description="Integer coordinates on a normalized 0-1000 scale",
+    )
+    coord_dropdown.add_choice(
+        "normalized_1",
+        label="0-1 floats",
+        description="Floating-point coordinates (less accurate for LLMs)",
     )
     inputs.enum(
         "coordinate_format",

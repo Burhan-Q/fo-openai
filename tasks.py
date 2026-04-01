@@ -208,14 +208,23 @@ class TaskConfig:
 
     _COORD_DESCS: dict[str, str] = {
         "normalized_1000": (
-            "0-1000 normalized coordinates where 0 is top-left"
-            " and 1000 is bottom-right"
+            "integer coordinates on a 0-1000 scale."
+            " x-axis: 0=left edge, 1000=right edge."
+            " y-axis: 0=top edge, 1000=bottom edge."
+            " All values MUST be integers between 0 and 1000"
         ),
         "normalized_1": (
-            "0-1 normalized coordinates where 0.0 is top-left"
-            " and 1.0 is bottom-right"
+            "floating-point coordinates on a 0.0-1.0 scale."
+            " x-axis: 0.0=left edge, 1.0=right edge."
+            " y-axis: 0.0=top edge, 1.0=bottom edge."
+            " All values MUST be between 0.0 and 1.0"
         ),
-        "pixel": "pixel coordinates",
+        "pixel": (
+            "pixel coordinates relative to the ORIGINAL image dimensions."
+            " x-axis: 0=left edge, image_width=right edge."
+            " y-axis: 0=top edge, image_height=bottom edge."
+            " All values MUST be non-negative integers"
+        ),
     }
 
     def __init__(
@@ -224,7 +233,7 @@ class TaskConfig:
         prompt: str | None = None,
         system_prompt: str | None = None,
         classes: list[str] | None = None,
-        coordinate_format: str = "normalized_1",
+        coordinate_format: str = "pixel",
         box_format: str = "xyxy",
         **template_kwargs: str,
     ) -> None:
@@ -237,8 +246,12 @@ class TaskConfig:
             system_prompt: Custom system prompt override.
             classes: Class labels for classify / tag / detect.  ``None``
                 activates the open-ended variant for classify and tag.
-            coordinate_format: Bounding-box coordinate convention
-                (``"normalized_1"``, ``"normalized_1000"``, or ``"pixel"``).
+            coordinate_format: Bounding-box coordinate convention.
+                ``"pixel"`` (default, recommended) uses integer pixel
+                coordinates relative to the original image dimensions,
+                which are included in each prompt.
+                ``"normalized_1000"`` uses 0-1000 integer scale.
+                ``"normalized_1"`` uses 0.0-1.0 float coordinates.
             box_format: Bounding-box layout
                 (``"xyxy"``, ``"xywh"``, or ``"cxcywh"``).
             **template_kwargs: Extra format kwargs for prompt templates
@@ -267,12 +280,17 @@ class TaskConfig:
             )
 
             default_system = (
-                "You are an object detector. Respond with a JSON object:"
+                "You are a precise object detector."
+                " Respond with a JSON object:"
                 ' {"detections": [{"label": "...", "box": '
                 + box_labels
-                + "}, ...]}. Use "
-                + coord_desc
-                + "."
+                + "}, ...]}.\n"
+                "Coordinate system: " + coord_desc + "."
+                " Coordinates MUST be relative to the ORIGINAL image"
+                " dimensions provided with each image, NOT any internally"
+                " resized or padded version."
+                " Ensure each bounding box tightly fits the detected"
+                " object."
             )
             default_prompt = "Detect all objects in this image."
             default_prompt_with_classes = (
@@ -312,6 +330,8 @@ class TaskConfig:
         self,
         image_content: dict[str, Any],
         exemplar_messages: list[dict[str, Any]] | None = None,
+        image_width: float | None = None,
+        image_height: float | None = None,
     ) -> list[dict[str, Any]]:
         """Build OpenAI-format chat messages for a single image.
 
@@ -323,6 +343,10 @@ class TaskConfig:
                 When provided, the system prompt gains a few-shot preamble
                 and the exemplar messages are inserted before the final
                 user query.
+            image_width: Original image width in pixels.  Included in
+                the user message for detection tasks so the model can
+                ground coordinates to the original image dimensions.
+            image_height: Original image height in pixels.
         """
         messages: list[dict[str, Any]] = []
 
@@ -338,13 +362,26 @@ class TaskConfig:
         if exemplar_messages:
             messages.extend(exemplar_messages)
 
+        # Build user prompt text — prepend image dimensions for detection
+        # to help the model ground coordinates to the original image
+        prompt_text = self.prompt
+        if self.task == "detect" and image_width and image_height:
+            w, h = int(image_width), int(image_height)
+            orientation = (
+                "landscape" if w > h else "portrait" if h > w else "square"
+            )
+            prompt_text = (
+                f"Original image: {w}x{h} pixels ({orientation}).\n"
+                f"{prompt_text}"
+            )
+
         # Final user message — the actual target image to process
         messages.append(
             {
                 "role": "user",
                 "content": [
                     image_content,
-                    {"type": "text", "text": self.prompt},
+                    {"type": "text", "text": prompt_text},
                 ],
             }
         )

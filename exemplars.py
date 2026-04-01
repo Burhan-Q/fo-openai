@@ -185,7 +185,7 @@ def serialize_exemplar(
     label_field: str,
     task: str,
     classes: list[str] | None = None,
-    coordinate_format: str = "normalized_1",
+    coordinate_format: str = "pixel",
     box_format: str = "xyxy",
 ) -> str:
     """Serialize a sample's label field to the task's response model JSON.
@@ -225,9 +225,13 @@ def serialize_exemplar(
     if task == "tag":
         return _serialize_tag(value, sample.id, label_field, classes)
     if task == "detect":
+        metadata = sample.metadata
+        img_w = getattr(metadata, "width", None) if metadata else None
+        img_h = getattr(metadata, "height", None) if metadata else None
         return _serialize_detect(
             value, sample.id, label_field, classes,
             coordinate_format, box_format,
+            image_width=img_w, image_height=img_h,
         )
     raise ValueError(f"Unknown task: '{task}'")
 
@@ -292,13 +296,13 @@ def _serialize_detect(
     classes: list[str] | None,
     coordinate_format: str,
     box_format: str,
+    image_width: float | None = None,
+    image_height: float | None = None,
 ) -> str:
     """Serialize Detections to DetectResponse JSON.
 
     FiftyOne stores bounding boxes as normalized [0,1] ``[x, y, w, h]``.
-    When the run uses the default format (normalized_1, xyxy), the stored
-    values only need an xywh→xyxy conversion. For non-default formats,
-    ``_fo_to_run_format`` handles the full transformation.
+    Conversion to the target format is handled by ``_fo_to_run_format``.
 
     Args:
         value: The FiftyOne Detections label value.
@@ -307,16 +311,27 @@ def _serialize_detect(
         classes: Optional class constraint list.
         coordinate_format: Target coordinate convention.
         box_format: Target box layout.
+        image_width: Original image width (required for ``"pixel"``
+            coordinate format).
+        image_height: Original image height (required for ``"pixel"``
+            coordinate format).
     """
     if not isinstance(value, fo.Detections):
         raise ValueError(
             f"Exemplar sample {sample_id}: field '{label_field}' is type "
             f"'{type(value).__name__}', expected Detections."
         )
+    if coordinate_format == "pixel" and (not image_width or not image_height):
+        raise ValueError(
+            f"Exemplar sample {sample_id}: pixel coordinate format requires "
+            f"image dimensions but metadata is missing. Ensure "
+            f"compute_metadata() has been called."
+        )
     items = []
     for det in value.detections:
         box = _fo_to_run_format(
-            det.bounding_box, coordinate_format, box_format
+            det.bounding_box, coordinate_format, box_format,
+            image_width=image_width, image_height=image_height,
         )
         items.append(DetectionItem(label=det.label, box=box))
 
@@ -332,6 +347,8 @@ def _fo_to_run_format(
     bbox: list[float],
     coordinate_format: str,
     box_format: str,
+    image_width: float | None = None,
+    image_height: float | None = None,
 ) -> list[float]:
     """Convert FiftyOne ``[x, y, w, h]`` (normalized 0-1) to the run format.
 
@@ -339,9 +356,13 @@ def _fo_to_run_format(
         bbox: FiftyOne bounding box as ``[x, y, width, height]`` in
             normalized ``[0, 1]`` coordinates.
         coordinate_format: Target coordinate system
-            (``"normalized_1"``, ``"normalized_1000"``).
+            (``"pixel"``, ``"normalized_1"``, ``"normalized_1000"``).
         box_format: Target box layout
             (``"xyxy"``, ``"xywh"``, ``"cxcywh"``).
+        image_width: Original image width in pixels.  Required when
+            *coordinate_format* is ``"pixel"``.
+        image_height: Original image height in pixels.  Required when
+            *coordinate_format* is ``"pixel"``.
 
     Returns:
         Bounding box in the target format as a list of floats.
@@ -349,8 +370,14 @@ def _fo_to_run_format(
     x, y, w, h = bbox
 
     # Scale to target coordinate system
-    scale = 1000.0 if coordinate_format == "normalized_1000" else 1.0
-    x, y, w, h = x * scale, y * scale, w * scale, h * scale
+    if coordinate_format == "pixel":
+        x = x * image_width
+        y = y * image_height
+        w = w * image_width
+        h = h * image_height
+    elif coordinate_format == "normalized_1000":
+        x, y, w, h = x * 1000, y * 1000, w * 1000, h * 1000
+    # normalized_1: no scaling needed (already [0, 1])
 
     # Convert to target box format
     if box_format == "xyxy":
@@ -372,7 +399,7 @@ def build_exemplar_messages(
     label_field: str,
     task: str,
     classes: list[str] | None = None,
-    coordinate_format: str = "normalized_1",
+    coordinate_format: str = "pixel",
     box_format: str = "xyxy",
     image_detail: str = "auto",
     max_workers: int = 4,
@@ -403,6 +430,10 @@ def build_exemplar_messages(
     Raises:
         ValueError: If any exemplar sample fails to serialize or encode.
     """
+    # Compute metadata for detection pixel coords (reads file headers only)
+    if task == "detect" and coordinate_format == "pixel":
+        exemplar_view.compute_metadata()
+
     filepaths: list[str] = exemplar_view.values("filepath")
     samples: list[fo.Sample] = list(exemplar_view)
 

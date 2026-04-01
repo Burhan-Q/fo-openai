@@ -29,6 +29,7 @@ _PERSIST_KEYS: list[str] = [
     "image_detail",
     "coordinate_format",
     "box_format",
+    "log_metadata",
     "enable_logging",
     "log_level",
     "log_file",
