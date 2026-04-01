@@ -13,11 +13,30 @@ When running inference on many samples in immediate (non-delegated) mode, the Fi
 
 ## Detection Coordinates
 
-### Pixel coordinates unreliable with OpenAI models
-OpenAI resizes images internally before vision processing. Returned bounding box coordinates are relative to the internal resolution, which is undocumented and may change. The `pixel` coordinate format is retained in code but removed from the UI dropdown. Only `normalized_1` (0-1) and `normalized_1000` (0-1000) are exposed.
+### General-purpose LLMs have limited detection accuracy
+Base (non-fine-tuned) OpenAI models like GPT-4o, GPT-4.1, and GPT-5 are
+not architecturally designed for precise spatial localization. On detection
+benchmarks (RF100-VL, CVPR 2025), GPT-5 scored mAP50:95 of only 1.5.
+Bounding box positions may be offset, especially on non-square images.
+For precision-critical detection, consider fine-tuned models or dedicated
+detectors (YOLO, GroundingDINO) instead.
 
-### 0-1000 normalized coordinates untested
-The `normalized_1000` coordinate format is available in the UI but has not been validated with OpenAI models. It may or may not produce accurate results depending on how the model interprets the coordinate instruction in the system prompt.
+### Pixel coordinates are the default (with image dimensions in prompt)
+The default coordinate format is ``pixel`` — integer pixel coordinates
+relative to the original image dimensions, which are included in every
+detection prompt ("Original image: WxH pixels (landscape)"). This gives
+the model concrete grounding to the actual image dimensions and produces
+integer values that align well with LLM tokenizers. Requires
+``compute_metadata()`` (reads file headers only, fast).
+
+### Integer coordinates preferred over 0-1 floats
+Research (arXiv:2406.13208) and industry practice (Gemini, Qwen-VL, OpenAI
+fine-tuning) show that integer coordinates produce more accurate bounding
+boxes from LLMs. Integers align with tokenizer distributions — a float
+like ``0.3741`` costs multiple tokens and is rare in training data, while
+``374`` is 1-2 tokens and common. Both ``pixel`` and ``normalized_1000``
+use integers; ``normalized_1`` (0-1 floats) remains available but is
+expected to be less accurate.
 
 ## Async Event Loop
 
