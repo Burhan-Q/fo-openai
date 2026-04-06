@@ -1,7 +1,7 @@
 # Few-Shot Exemplar Samples — Design Spec
 
 **Date:** 2026-03-31
-**Status:** Draft
+**Status:** Implemented (some details changed during development — see operational docs for current behavior)
 
 ## Context
 
@@ -205,14 +205,16 @@ by task verb (e.g., "classify", "caption", "detect objects in").
 
 ## 4. Tabbed UI Restructuring
 
-### 4.1 Four-Tab Layout
+### 4.1 Five-Tab Layout
+
+> **Implementation note:** The final implementation uses 5 tabs — Logging was promoted to its own tab instead of being placed outside the tab layout.
 
 The operator form is restructured using `types.TabsView()`:
 
 ```
-┌─────────┬────────┬────────────┬──────────┐
-│  Model  │  Task  │ Exemplars  │ Advanced │
-└─────────┴────────┴────────────┴──────────┘
+┌─────────┬────────┬────────────┬──────────┬──────────┐
+│  Model  │  Task  │ Exemplars  │ Logging  │ Advanced │
+└─────────┴────────┴────────────┴──────────┴──────────┘
 ```
 
 Implemented via:

@@ -8,6 +8,10 @@ __init__.py
         ├── engine.py
         │     └── _log.py
         ├── tasks.py
+        ├── exemplars.py  (lazy import in execute())
+        │     ├── tasks.py
+        │     ├── utils.py
+        │     └── _log.py
         ├── utils.py
         ├── _log.py
         └── _pricing.py
@@ -27,7 +31,8 @@ The largest module. Contains both FiftyOne operators and all UI helper functions
 - Config resolution: `_resolve_config`, `_create_engine`, `_create_task`
 - Class label resolution: `_resolve_classes_from_field`, `_get_field_classes`, `_find_label_fields`
 - Field management: `_resolve_field_name`, `_write_batch_results`
-- UI form builders: `_model_selector`, `_task_selector`, `_task_settings`, `_class_source_selector`, `_field_picker`, `_cost_summary`, `_output_settings`, `_logging_settings`, `_advanced_settings`, `_image_detail_selector`, `_base_url_input`, `_detection_format_selectors`, `_exemplar_tab`, `_exemplar_saved_view_picker`, `_exemplar_field_picker`, `_exemplar_label_field_picker`, `_exemplar_preview`
+- UI form builders: `_model_selector`, `_task_selector`, `_task_settings`, `_class_source_selector`, `_field_picker`, `_json_config_mode`, `_output_settings`, `_logging_settings`, `_advanced_settings`, `_image_detail_selector`, `_base_url_input`, `_detection_format_selectors`, `_exemplar_tab`, `_exemplar_saved_view_picker`, `_exemplar_field_picker`, `_exemplar_label_field_picker`, `_exemplar_preview`
+- Cost helpers: `_cost_summary`, `_get_cost_warn_threshold`, `_estimate_prompt_tokens`, `_fmt_tokens`, `_count_exemplar_samples`
 - Formatting: `_fmt_usd`, `_error`
 
 ### `engine.py`

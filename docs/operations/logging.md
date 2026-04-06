@@ -4,7 +4,7 @@ Opt-in, plugin-scoped logging under the `fo_openai` namespace.
 
 ## Enabling
 
-Toggle "Enable logging" in the Output Settings section of the operator form. When enabled, two additional controls appear:
+Toggle "Enable logging" in the **Logging** tab of the operator form. When enabled, two additional controls appear:
 - **Log Level** — `INFO` (default), `DEBUG`, or `WARNING`
 - **Log File** — optional file path; leave empty for stderr only
 

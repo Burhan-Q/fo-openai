@@ -63,7 +63,7 @@ adds approximately:
 For example, 5 exemplars at "auto" detail add ~3,975 tokens per call.
 Over 1,000 samples, that's ~3.975M extra input tokens.
 
-The cost summary (always visible at the bottom of the form) shows a
+The cost summary (always visible above the tabs) shows a
 breakdown of inference cost vs. exemplar overhead.
 
 ## Configuration
@@ -99,9 +99,9 @@ succeed or the entire run halts.
 
 For detection tasks, bounding boxes from FiftyOne's native format
 (normalized [0,1] `[x, y, w, h]`) are converted to the configured
-coordinate format and box format. The default format (normalized_1, xyxy)
-requires only an xywh→xyxy conversion; non-default formats use
-`_fo_to_run_format()`.
+coordinate format and box format via `_fo_to_run_format()`. The default
+format (pixel, xyxy) requires image dimensions from sample metadata
+(obtained via `compute_metadata()`).
 
 ## Run Summary
 

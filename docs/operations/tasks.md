@@ -27,9 +27,9 @@ When classes are provided, a dynamically constrained Pydantic model with `Litera
 
 ## Prompt Structure
 
-Each request sends:
-1. **System message** (optional) — task-specific instruction
-2. **User message** — image content + text prompt
+Each request sends via `client.responses.parse()`:
+1. **Instructions** — task-specific system prompt (via the `instructions` parameter)
+2. **Input array** — optional exemplar pairs + user message with image content + text prompt
 
 The `detect` task dynamically builds its system and user prompts based on the coordinate format and box format selected.
 

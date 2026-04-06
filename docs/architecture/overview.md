@@ -26,6 +26,7 @@ fo-openai/
 ├── operators.py        # OpenAIInference + CheckOpenAIStatus operators, all UI helpers
 ├── engine.py           # OpenAIEngine — async batch inference with structured output
 ├── tasks.py            # TaskConfig — prompts, Pydantic models, response parsing
+├── exemplars.py        # Few-shot exemplar resolution, serialization, message building
 ├── utils.py            # Image encoding, config persistence (ExecutionStore)
 ├── _log.py             # Plugin-scoped logging (fo_openai namespace)
 ├── _pricing.py         # Model pricing — fetched from GitHub, cached locally

@@ -44,11 +44,11 @@ Key choices made during development, with rationale.
 
 **Why:** FiftyOne's `SecretsDictionary` reads from environment variables automatically. Declaring both names means users with either env var convention are supported without manual `os.environ.get()` in code. The `SecretsDictionary` returns `""` (not `None`) for declared-but-unset secrets, so the `or` chain works correctly.
 
-## Pixel coordinates removed from UI
+## Pixel coordinates as the default for detection
 
-**Decision:** The `pixel` coordinate format is not exposed in the detection format dropdown.
+**Decision:** The `pixel` coordinate format is the default and recommended format for detection tasks.
 
-**Why:** OpenAI resizes images internally before vision processing. Bounding box coordinates returned by the model are relative to the resized image, not the original. There is no reliable way to reverse this scaling. Normalized coordinates (0-1 or 0-1000) work universally regardless of internal resizing. The code still supports pixel format for potential future use.
+**Why:** Research (arXiv:2406.13208) and industry practice (Gemini, Qwen-VL, OpenAI fine-tuning) show that integer coordinates produce more accurate bounding boxes from LLMs. Integers align with tokenizer distributions — a float like ``0.3741`` costs multiple tokens and is rare in training data, while ``374`` is 1-2 tokens and common. The original image dimensions are included in every detection prompt ("Original image: WxH pixels (landscape)") to give the model concrete grounding. Requires `compute_metadata()` which only reads file headers (fast). Both `pixel` and `normalized_1000` use integers; `normalized_1` (0-1 floats) remains available but is expected to be less accurate.
 
 ## `TextFieldView` for prompt override (not `TextView`)
 

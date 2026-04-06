@@ -21,12 +21,12 @@ https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_
 ## Token Estimation
 
 ### Input tokens per sample
-- **Prompt text:** 50 tokens (constant estimate for system + user prompt text)
+- **Prompt text:** dynamically estimated via `_estimate_prompt_tokens()` using a ~4 chars/token heuristic on the system prompt, user prompt, classes list, and question text. Minimum floor of 50 tokens (`PROMPT_TEXT_TOKENS`).
 - **Image tokens:** depends on `image_detail` setting:
   - `low`: 85 tokens
   - `high`: 765 tokens
   - `auto`: 765 tokens (conservative)
-- **Total input:** `50 + image_tokens`
+- **Total input:** `prompt_tokens + image_tokens`
 
 ### Output tokens per task
 Heuristic estimates in `OUTPUT_TOKEN_ESTIMATES`:
@@ -49,10 +49,24 @@ total_cost = per_image_cost * num_samples
 
 ## Display
 
-Shown as a `Notice` (< $1) or `Warning` (>= $1) in the form:
+Rendered as a persistent markdown table above the tabs (always visible regardless of active tab):
+
 ```
-Estimated cost: $0.00097/image, $0.1943 total for 200 samples
+| | Tokens/Call | Total Tokens | Cost/Sample | Total Cost |
+|---|--:|--:|--:|--:|
+| **Prompt** | 50 | 10,000 | | |
+| **Image** | 765 | 153,000 | | |
+| **Output** | 80 | 16,000 | | |
+| **Inference** | 895 | 179,000 | $0.0015 | $0.30 |
+| **Exemplars** (3) | 2,385 | 477,000 | $0.0040 | $0.80 |
+| **Total** | 3,280 | **656,000** | $0.0055 | **$1.10** |
+
+*200 samples*
 ```
+
+The exemplar row only appears when exemplars are enabled.
+
+A `Warning` banner appears when the total cost exceeds the threshold (default `$5.00`, configurable via `FIFTYONE_OPENAI_COST_WARN` environment variable).
 
 Dollar amounts use dynamic precision via `_fmt_usd()`:
 - `$0.00` for zero
