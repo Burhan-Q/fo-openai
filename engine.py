@@ -31,7 +31,7 @@ class OpenAIEngine:
         """Initialise the engine.
 
         Args:
-            model: OpenAI model identifier (e.g. ``"gpt-4o"``).
+            model: OpenAI model identifier (e.g. ``"gpt-5.4-nano"``).
             api_key: API key for authentication.
             base_url: Optional custom API base for Azure / proxy setups.
             max_concurrent: Semaphore limit for parallel requests.

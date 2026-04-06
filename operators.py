@@ -730,7 +730,7 @@ def _model_selector(
         label="Model",
         required=True,
         default=stored.get("model", ""),
-        description="LiteLLM model ID (e.g., gpt-4o, gpt-4o-mini)",
+        description="OpenAI model ID (e.g., gpt-5.4-nano, gpt-5.4-mini)",
     )
 
 
