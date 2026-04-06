@@ -2,7 +2,7 @@ name: "@Burhan-Q/fo-openai"
 type: plugin
 author: "Burhan-Q"
 version: "0.1.0"
-description: "OpenAI-powered image labeling via LiteLLM for FiftyOne"
+description: "OpenAI-powered image labeling for FiftyOne"
 fiftyone:
   version: ">=1.13.5"
 operators:
