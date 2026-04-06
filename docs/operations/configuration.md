@@ -47,10 +47,13 @@ All keys in `utils._PERSIST_KEYS`:
 
 ```
 model, base_url, api_key, task, classes, question, prompt,
-system_prompt, prompt_override, temperature, max_completion_tokens,
-top_p, seed, batch_size, max_concurrent, max_workers, timeout,
-image_detail, coordinate_format, box_format, enable_logging,
-log_level, log_file
+system_prompt, prompt_override, temperature, max_output_tokens,
+top_p, batch_size, max_concurrent, max_workers, timeout,
+image_detail, coordinate_format, box_format, log_metadata,
+enable_logging, log_level, log_file, exemplars_enabled,
+exemplar_source, exemplar_view_name, exemplar_sample_ids,
+exemplar_tag, exemplar_field_name, exemplar_field_value,
+exemplar_label_field
 ```
 
 ## SDK Parameter Handling

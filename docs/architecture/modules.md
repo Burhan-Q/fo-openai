@@ -34,17 +34,18 @@ The largest module. Contains both FiftyOne operators and all UI helper functions
 Thin wrapper around `AsyncOpenAI`. Single class: `OpenAIEngine`.
 
 - Constructor takes `model`, `api_key`, `base_url`, `max_concurrent`, `timeout`, and `**completion_kwargs`
-- `completion_kwargs` are forwarded directly to `client.beta.chat.completions.parse()` — only user-specified values, no defaults
-- `infer_batch()` → `_async_infer_batch()` → returns `list[BaseModel | Exception]`
+- `completion_kwargs` are forwarded directly to `client.responses.parse()` — only user-specified values, no defaults
+- `infer_batch(instructions, inputs, response_model)` → `_async_infer_batch()` → returns `list[BaseModel | Exception]`
 - `_run_async()` helper handles FiftyOne's existing event loop (runs async in a thread)
 
 ### `tasks.py`
 Task definitions, Pydantic response models, and response-to-FiftyOne-label conversion.
 
 - 6 static Pydantic models: `TextResponse`, `ClassifyResponse`, `TagResponse`, `VQAResponse`, `DetectionItem`, `DetectResponse`
-- 3 dynamic constrained model builders using `Literal` + `create_model`
+- 3 dynamic constrained model builders using `Literal` + `create_model` (cached via `@lru_cache`)
 - `TaskConfig` class: prompt construction, response model selection, label conversion
-- `build_messages()` supports optional `exemplar_messages` parameter for few-shot prompting
+- `get_instructions()` returns the system instructions (with optional few-shot preamble)
+- `build_input()` builds the Responses API `input` array (exemplar pairs + user message)
 - `_FEWSHOT_PREAMBLE` and `_TASK_VERBS` constants for few-shot system prompt framing
 - `_convert_box()`: bounding box format conversion (xyxy/xywh/cxcywh → FiftyOne [x,y,w,h] in [0,1])
 

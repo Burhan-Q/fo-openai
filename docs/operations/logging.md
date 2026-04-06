@@ -36,7 +36,7 @@ Per-sample errors are prefixed to distinguish their origin:
 
 | Prefix | Source | Example |
 |--------|--------|---------|
-| `[API]` | Exception from `client.beta.chat.completions.parse()` | Rate limit, timeout, content policy, bad parameter |
+| `[API]` | Exception from `client.responses.parse()` | Rate limit, timeout, content policy, bad parameter |
 | `[Parse]` | Exception from `task.parse_response()` | Coordinate conversion failure, unexpected model structure |
 
 ## Run Summary

@@ -14,7 +14,7 @@ Send images from a FiftyOne dataset to OpenAI vision models for labeling (classi
 | Package | Min Version | Role |
 |---------|-------------|------|
 | `fiftyone` | 1.13.5 | Dataset framework, operator system, App UI |
-| `openai` | 2.0.0 | API client — `AsyncOpenAI.beta.chat.completions.parse()` |
+| `openai` | 2.0.0 | API client — `AsyncOpenAI.responses.parse()` (Responses API) |
 | `pydantic` | 2.12.5 | Structured output response models |
 
 ## Files

@@ -2,14 +2,14 @@
 
 How the plugin ensures the model returns well-formed, parseable responses.
 
-## OpenAI SDK Parse API
+## OpenAI Responses API
 
-The plugin uses `client.beta.chat.completions.parse()` (not `client.chat.completions.create()`). This method:
+The plugin uses `client.responses.parse()` (the Responses API). This method:
 
-- Accepts a Pydantic `BaseModel` class as `response_format`
-- Converts the model's JSON schema to OpenAI's `response_format` parameter automatically
-- Returns `message.parsed` as the validated Pydantic instance (or `None` on failure)
-- Returns `message.refusal` as a string if the model refuses (content policy)
+- Accepts a Pydantic `BaseModel` class as `text_format`
+- Converts the model's JSON schema to the API's structured output format automatically
+- Returns `output_parsed` as the validated Pydantic instance (or `None` on failure)
+- Embeds refusals as content items with `type == "refusal"` (content policy)
 
 The engine raises `ValueError` for refusals or empty parsed responses — these are caught as `[API]` errors in the batch loop.
 
@@ -35,7 +35,7 @@ When the user provides class labels, the plugin builds Pydantic models with `Lit
 Literal["cat", "dog"]  →  {"enum": ["cat", "dog"]} in JSON schema
 ```
 
-Three builder functions:
+Three builder functions (cached via `@lru_cache`):
 - `_constrained_classify_model(classes)` — `label: Literal[...]`
 - `_constrained_tag_model(classes)` — `labels: list[Literal[...]]`
 - `_constrained_detect_model(classes)` — nested: detection items with `label: Literal[...]`
@@ -43,7 +43,7 @@ Three builder functions:
 ## Response Flow
 
 ```
-OpenAI API → message.parsed (Pydantic instance)
+Responses API → output_parsed (Pydantic instance)
     ↓
 task.parse_response(parsed) → FiftyOne label
 ```
@@ -52,4 +52,4 @@ Since the OpenAI SDK handles JSON parsing and Pydantic validation, `parse_respon
 
 ## Key Design Choice
 
-Only user-specified completion kwargs (`temperature`, `max_completion_tokens`, `top_p`, `seed`) are sent to the API. Omitted params use the model's own defaults. This avoids `BadRequestError` from sending parameters that newer models don't support (e.g., `max_tokens` was replaced by `max_completion_tokens`). See [Design Decisions](../development/decisions.md).
+Only user-specified completion kwargs (`temperature`, `max_output_tokens`, `top_p`) are sent to the API. Omitted params use the model's own defaults. This avoids errors from sending parameters that a model doesn't support. See [Design Decisions](../development/decisions.md).
