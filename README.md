@@ -1,6 +1,8 @@
 # fo-openai
 
-A [FiftyOne](https://docs.voxel51.com) plugin for labeling images with OpenAI vision models. Send images from your dataset to models like `gpt-4o` or `gpt-5.4-mini` and get structured labels back — classifications, tags, detections, captions, VQA answers, or OCR text — directly in the FiftyOne App.
+A [FiftyOne](https://docs.voxel51.com) plugin for labeling images with OpenAI vision models. Send images from your dataset to models like `gpt-4o`, `gpt-4.1-mini`, or `gpt-5.4-nano` and get structured labels back — classifications, tags, detections, captions, VQA answers, or OCR text — directly in the FiftyOne App.
+
+Uses the [OpenAI Responses API](https://developers.openai.com/api/docs/guides/structured-outputs) with Pydantic structured output for reliable, schema-validated responses.
 
 ## Installation
 
@@ -23,7 +25,7 @@ Install Python dependencies:
 
 ```bash
 cd "$(fiftyone config plugins_dir)/@Burhan-Q/fo-openai"
-pip install -r requirements.txt  # or: pip install openai pydantic
+pip install openai pydantic
 ```
 
 ## Setup
@@ -82,30 +84,42 @@ foo.execute_operator(
 
 ## Features
 
-- **Cost preview** — see estimated per-image and total cost before running
+- **Cost preview** — estimated per-sample and total cost displayed before running, with token breakdown
+- **Few-shot exemplars** — optionally provide labeled samples as reference examples to improve output quality
 - **Class labels from your dataset** — pick an existing label field to reuse its classes
-- **Structured output** — responses are parsed via OpenAI's structured output API, not regex or string matching
+- **Structured output** — responses are parsed via the OpenAI Responses API with Pydantic models, not regex or string matching
+- **Detection coordinate formats** — pixel (recommended), 0-1000 integers, or 0-1 floats
 - **Batch processing** — configurable batch size and concurrency
 - **Delegated execution** — run large jobs in the background
-- **Persistent settings** — configuration survives app restarts
+- **Persistent settings** — all configuration (including exemplar settings) persists across app restarts
 - **Opt-in logging** — log to file for debugging, with auto-incrementing filenames
 - **JSON config export/import** — save and reuse run configurations
 
 ## Configuration
 
-All settings are available in the operator form. Key options:
+The operator form is organized into 5 tabs:
 
-| Setting | Location | Description |
-|---------|----------|-------------|
-| Model | Main form | Any OpenAI model ID (e.g. `gpt-4o`, `gpt-5.4-mini`) |
-| Task | Main form | One of the 6 supported tasks |
-| Classes | Task settings | From dataset field, custom list, or open-ended |
-| Custom prompt | Task settings | Override the default prompt |
-| Enable logging | Output settings | Log progress and errors to stderr / file |
-| Image detail | Advanced | `auto`, `low` (cheaper), or `high` (more detail) |
-| Timeout | Advanced | Per-request timeout in seconds |
+| Tab | Settings |
+|-----|----------|
+| **Model** | Model ID (e.g. `gpt-4o`, `gpt-4.1-mini`), custom base URL |
+| **Task** | Task type, class labels, custom prompts, detection coordinate/box format |
+| **Exemplars** | Enable few-shot examples, select source (saved view, sample IDs, tag, or field) |
+| **Logging** | Enable logging, log level, log file path |
+| **Advanced** | Temperature, max output tokens, top P, batch size, concurrency, image detail |
 
 Settings persist between runs. Use the **Reset to defaults** mode to clear them.
+
+## Few-Shot Exemplars
+
+Provide labeled samples as reference examples sent alongside every inference call. The model sees your exemplar images with their correct labels before processing each target image.
+
+Exemplar sources:
+- **Saved view** — a named FiftyOne saved view
+- **Sample IDs** — specific sample IDs
+- **Tag** — all samples matching a tag
+- **Field** — samples where a field equals a value
+
+See [docs/operations/exemplars.md](docs/operations/exemplars.md) for details.
 
 ## License
 
