@@ -1,5 +1,5 @@
-"""OpenAIEngine: async inference via the OpenAI Python SDK with structured
-output parsing."""
+"""OpenAIEngine: async inference via the OpenAI Responses API with
+Pydantic structured output parsing."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 
 class OpenAIEngine:
     """OpenAI SDK-backed engine for vision inference with Pydantic structured
-    output via ``client.beta.chat.completions.parse()``."""
+    output via ``client.responses.parse()``."""
 
     def __init__(
         self,
@@ -38,10 +38,9 @@ class OpenAIEngine:
             timeout: Per-request timeout in seconds.  ``None`` uses the
                 SDK default.
             **completion_kwargs: Additional keyword arguments forwarded
-                directly to ``client.beta.chat.completions.parse()``.
+                directly to ``client.responses.parse()``.
                 Only user-specified values should be passed (e.g.
-                ``temperature``, ``max_completion_tokens``, ``top_p``,
-                ``seed``).
+                ``temperature``, ``max_output_tokens``, ``top_p``).
         """
         self.model = model
         self.api_key = api_key
@@ -52,29 +51,34 @@ class OpenAIEngine:
 
     def infer_batch(
         self,
-        messages: list[list[dict[str, Any]]],
+        instructions: str,
+        inputs: list[list[dict[str, Any]]],
         response_model: type[BaseModel],
     ) -> list[BaseModel | Exception]:
-        """Run batch inference with structured output via the OpenAI SDK.
+        """Run batch inference with structured output via the Responses API.
 
-        Uses ``client.beta.chat.completions.parse()`` which returns
-        ``message.parsed`` as a validated Pydantic model instance.
+        Uses ``client.responses.parse()`` which returns
+        ``output_parsed`` as a validated Pydantic model instance.
 
         Args:
-            messages: One OpenAI-format message list per sample.
+            instructions: System instructions shared across all samples.
+            inputs: One Responses API ``input`` list per sample.
             response_model: Pydantic ``BaseModel`` class used as
-                ``response_format``.
+                ``text_format``.
 
         Returns:
-            A list aligned with *messages* — each element is either a
+            A list aligned with *inputs* — each element is either a
             parsed Pydantic model instance or the ``Exception`` that
             occurred.
         """
-        return _run_async(self._async_infer_batch(messages, response_model))
+        return _run_async(
+            self._async_infer_batch(instructions, inputs, response_model)
+        )
 
     async def _async_infer_batch(
         self,
-        messages: list[list[dict[str, Any]]],
+        instructions: str,
+        inputs: list[list[dict[str, Any]]],
         response_model: type[BaseModel],
     ) -> list[BaseModel | Exception]:
         """Execute all completion requests concurrently."""
@@ -87,27 +91,33 @@ class OpenAIEngine:
 
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "response_format": response_model,
+            "text_format": response_model,
+            "store": False,
             **self.completion_kwargs,
         }
 
-        async def _call(msgs: list[dict[str, Any]]) -> BaseModel:
+        async def _call(input_msgs: list[dict[str, Any]]) -> BaseModel:
             """Send a single parse request under the semaphore."""
             async with sem:
-                resp = await client.beta.chat.completions.parse(
-                    messages=msgs, **kwargs
+                resp = await client.responses.parse(
+                    input=input_msgs,
+                    instructions=instructions,
+                    **kwargs,
                 )
-                msg = resp.choices[0].message
-                if msg.refusal:
-                    raise ValueError(f"Model refused: {msg.refusal}")
-                if msg.parsed is None:
-                    raise ValueError(
-                        f"Empty parsed response (content={msg.content!r})"
-                    )
-                return msg.parsed
+                # Check for refusal in output content
+                for item in resp.output:
+                    if hasattr(item, "content"):
+                        for c in item.content:
+                            if c.type == "refusal":
+                                raise ValueError(
+                                    f"Model refused: {c.refusal}"
+                                )
+                if resp.output_parsed is None:
+                    raise ValueError("Empty parsed response")
+                return resp.output_parsed
 
         results = await asyncio.gather(
-            *[_call(m) for m in messages], return_exceptions=True
+            *[_call(m) for m in inputs], return_exceptions=True
         )
         return list(results)
 

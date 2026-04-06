@@ -19,9 +19,8 @@ _PERSIST_KEYS: list[str] = [
     "system_prompt",
     "prompt_override",
     "temperature",
-    "max_completion_tokens",
+    "max_output_tokens",
     "top_p",
-    "seed",
     "batch_size",
     "max_concurrent",
     "max_workers",
@@ -125,12 +124,12 @@ def build_image_contents(
     max_workers: int = 4,
     image_detail: str = "auto",
 ) -> list[dict[str, Any]]:
-    """Build image-content dicts for OpenAI chat messages.
+    """Build image-content dicts for the OpenAI Responses API.
 
     HTTP(S) URLs are passed through directly.  Local files are
     base64-encoded in parallel.  The *image_detail* level (``"low"``,
-    ``"high"``, or ``"auto"``) is set on every resulting ``image_url``
-    dict.
+    ``"high"``, or ``"auto"``) is set on every resulting
+    ``input_image`` dict.
     """
     results: list[dict[str, Any]] = [{}] * len(filepaths)
     to_encode: list[int] = []
@@ -150,14 +149,14 @@ def build_image_contents(
 
     # Apply detail level uniformly
     for item in results:
-        item["image_url"]["detail"] = image_detail
+        item["detail"] = image_detail
 
     return results
 
 
 def _url_content(url: str) -> dict[str, Any]:
-    """Wrap an HTTP(S) URL as an ``image_url`` content dict."""
-    return {"type": "image_url", "image_url": {"url": url}}
+    """Wrap an HTTP(S) URL as an ``input_image`` content dict."""
+    return {"type": "input_image", "image_url": url}
 
 
 def _encode_base64(filepath: str) -> dict[str, Any]:
@@ -166,6 +165,6 @@ def _encode_base64(filepath: str) -> dict[str, Any]:
     with open(filepath, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("utf-8")
     return {
-        "type": "image_url",
-        "image_url": {"url": f"data:{mime};base64,{b64}"},
+        "type": "input_image",
+        "image_url": f"data:{mime};base64,{b64}",
     }

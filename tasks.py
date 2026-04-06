@@ -1,9 +1,14 @@
 """TaskConfig: Pydantic response models, prompts, structured output schemas,
-and post-generation validation for all vision inference tasks."""
+and post-generation validation for all vision inference tasks.
+
+Uses the OpenAI Responses API (``client.responses.parse()``) for
+structured output with Pydantic models.
+"""
 
 from __future__ import annotations
 
 import logging
+from functools import lru_cache
 from typing import Any
 
 import fiftyone as fo
@@ -54,27 +59,30 @@ class DetectResponse(BaseModel):
 # -- Dynamic constrained model builders --
 
 
-def _constrained_classify_model(classes: list[str]) -> type[BaseModel]:
+@lru_cache(maxsize=8)
+def _constrained_classify_model(classes: tuple[str, ...]) -> type[BaseModel]:
     """Build a Pydantic model with ``label`` constrained to *classes*."""
     from typing import Literal
 
-    literal_type = Literal[tuple(classes)]  # type: ignore[valid-type]
+    literal_type = Literal[classes]  # type: ignore[valid-type]
     return create_model("ClassifyConstrained", label=(literal_type, ...))
 
 
-def _constrained_tag_model(classes: list[str]) -> type[BaseModel]:
+@lru_cache(maxsize=8)
+def _constrained_tag_model(classes: tuple[str, ...]) -> type[BaseModel]:
     """Build a Pydantic model with ``labels`` constrained to *classes*."""
     from typing import Literal
 
-    literal_type = Literal[tuple(classes)]  # type: ignore[valid-type]
+    literal_type = Literal[classes]  # type: ignore[valid-type]
     return create_model("TagConstrained", labels=(list[literal_type], ...))
 
 
-def _constrained_detect_model(classes: list[str]) -> type[BaseModel]:
+@lru_cache(maxsize=8)
+def _constrained_detect_model(classes: tuple[str, ...]) -> type[BaseModel]:
     """Build a Pydantic model with detection labels constrained to *classes*."""
     from typing import Literal
 
-    literal_type = Literal[tuple(classes)]  # type: ignore[valid-type]
+    literal_type = Literal[classes]  # type: ignore[valid-type]
     item = create_model(
         "DetItem", label=(literal_type, ...), box=(list[float], ...)
     )
@@ -326,37 +334,46 @@ class TaskConfig:
             raw_prompt.format(**fmt_kwargs) if fmt_kwargs else raw_prompt
         )
 
-    def build_messages(
+    def get_instructions(
+        self,
+        exemplar_messages: list[dict[str, Any]] | None = None,
+    ) -> str:
+        """Return the instructions string for the Responses API.
+
+        When *exemplar_messages* are provided the few-shot preamble is
+        prepended to the system prompt.  This value maps directly to the
+        ``instructions`` parameter of ``client.responses.parse()``.
+        """
+        system = self.system_prompt
+        if exemplar_messages and system:
+            verb = _TASK_VERBS.get(self.task, self.task)
+            system = _FEWSHOT_PREAMBLE.format(task_verb=verb) + system
+        return system
+
+    def build_input(
         self,
         image_content: dict[str, Any],
         exemplar_messages: list[dict[str, Any]] | None = None,
         image_width: float | None = None,
         image_height: float | None = None,
     ) -> list[dict[str, Any]]:
-        """Build OpenAI-format chat messages for a single image.
+        """Build the ``input`` array for the Responses API.
+
+        Returns a list of message dicts containing optional exemplar
+        pairs followed by the final user query.  The system prompt is
+        handled separately via :meth:`get_instructions`.
 
         Args:
             image_content: Image content dict (base64 or URL) for the
                 target sample.
             exemplar_messages: Optional list of pre-built user/assistant
                 message pairs from :func:`exemplars.build_exemplar_messages`.
-                When provided, the system prompt gains a few-shot preamble
-                and the exemplar messages are inserted before the final
-                user query.
             image_width: Original image width in pixels.  Included in
                 the user message for detection tasks so the model can
                 ground coordinates to the original image dimensions.
             image_height: Original image height in pixels.
         """
         messages: list[dict[str, Any]] = []
-
-        # System prompt — prepend few-shot preamble when exemplars present
-        system = self.system_prompt
-        if exemplar_messages and system:
-            verb = _TASK_VERBS.get(self.task, self.task)
-            system = _FEWSHOT_PREAMBLE.format(task_verb=verb) + system
-        if system:
-            messages.append({"role": "system", "content": system})
 
         # Exemplar pairs (user image + assistant JSON) if provided
         if exemplar_messages:
@@ -381,7 +398,7 @@ class TaskConfig:
                 "role": "user",
                 "content": [
                     image_content,
-                    {"type": "text", "text": prompt_text},
+                    {"type": "input_text", "text": prompt_text},
                 ],
             }
         )
@@ -396,17 +413,17 @@ class TaskConfig:
         """
         if self.task == "classify":
             if self.classes:
-                return _constrained_classify_model(self.classes)
+                return _constrained_classify_model(tuple(self.classes))
             return ClassifyResponse
 
         if self.task == "tag":
             if self.classes:
-                return _constrained_tag_model(self.classes)
+                return _constrained_tag_model(tuple(self.classes))
             return TagResponse
 
         if self.task == "detect":
             if self.classes:
-                return _constrained_detect_model(self.classes)
+                return _constrained_detect_model(tuple(self.classes))
             return DetectResponse
 
         if self.task == "vqa":
@@ -429,8 +446,8 @@ class TaskConfig:
     ) -> fo.Classification | fo.Classifications | fo.Detections:
         """Convert a parsed Pydantic model into a FiftyOne label.
 
-        The OpenAI SDK's ``beta.chat.completions.parse()`` returns
-        ``message.parsed`` as an already-validated Pydantic instance.
+        The OpenAI SDK's ``responses.parse()`` returns
+        ``output_parsed`` as an already-validated Pydantic instance.
         This method converts it to the corresponding FiftyOne label type.
         """
         if self.task in ("caption", "ocr"):

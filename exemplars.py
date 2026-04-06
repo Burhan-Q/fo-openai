@@ -263,7 +263,7 @@ def _serialize_classify(
 ) -> str:
     label = _extract_label_text(value, sample_id, label_field)
     if classes:
-        model_cls = _constrained_classify_model(classes)
+        model_cls = _constrained_classify_model(tuple(classes))
         return model_cls(label=label).model_dump_json()
     return ClassifyResponse(label=label).model_dump_json()
 
@@ -284,7 +284,7 @@ def _serialize_tag(
             f"or Classifications."
         )
     if classes:
-        model_cls = _constrained_tag_model(classes)
+        model_cls = _constrained_tag_model(tuple(classes))
         return model_cls(labels=labels).model_dump_json()
     return TagResponse(labels=labels).model_dump_json()
 
@@ -336,7 +336,7 @@ def _serialize_detect(
         items.append(DetectionItem(label=det.label, box=box))
 
     if classes:
-        model_cls = _constrained_detect_model(classes)
+        model_cls = _constrained_detect_model(tuple(classes))
         return model_cls(
             detections=[{"label": it.label, "box": it.box} for it in items]
         ).model_dump_json()
@@ -459,7 +459,7 @@ def build_exemplar_messages(
             "role": "user",
             "content": [
                 image_content,
-                {"type": "text", "text": _EXEMPLAR_USER_TEXT},
+                {"type": "input_text", "text": _EXEMPLAR_USER_TEXT},
             ],
         })
         # Assistant message: expected output JSON

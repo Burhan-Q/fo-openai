@@ -44,7 +44,7 @@ _DEFAULTS: dict[str, Any] = {
 
 
 class OpenAIInference(foo.Operator):
-    """Send images to OpenAI vision models for labeling via LiteLLM."""
+    """Send images to OpenAI vision models for labeling."""
 
     @property
     def config(self) -> foo.OperatorConfig:
@@ -251,13 +251,18 @@ class OpenAIInference(foo.Operator):
             field_name,
         )
 
+        # Compute instructions once (shared across all samples)
+        instructions = task.get_instructions(
+            exemplar_messages=exemplar_messages
+        )
+
         # Build metadata for optional per-label logging
         log_metadata: bool = params.get("log_metadata", False)
         full_prompt = ""
         infer_cfg: dict[str, Any] = {}
         if log_metadata:
-            if task.system_prompt:
-                full_prompt += f"[system] {task.system_prompt}\n"
+            if instructions:
+                full_prompt += f"[instructions] {instructions}\n"
             full_prompt += f"[user] {task.prompt}"
             infer_cfg = {
                 **engine.completion_kwargs,
@@ -310,8 +315,8 @@ class OpenAIInference(foo.Operator):
                 max_workers=max_workers,
                 image_detail=image_detail,
             )
-            batch_messages = [
-                task.build_messages(
+            batch_inputs = [
+                task.build_input(
                     img,
                     exemplar_messages=exemplar_messages,
                     image_width=w,
@@ -321,9 +326,11 @@ class OpenAIInference(foo.Operator):
                     image_contents, batch_widths, batch_heights
                 )
             ]
-            logger.debug("Batch %d: sending %d requests", batch_num, len(batch_messages))
+            logger.debug("Batch %d: sending %d requests", batch_num, len(batch_inputs))
             responses = engine.infer_batch(
-                batch_messages, response_model=response_model
+                instructions=instructions,
+                inputs=batch_inputs,
+                response_model=response_model,
             )
 
             results: dict[str, Any] = {}
@@ -593,19 +600,14 @@ def _create_engine(
         )
 
     # Build completion kwargs — only include values the user explicitly set.
-    # Omitted params let the OpenAI SDK / model use their own defaults,
-    # avoiding errors like "Unsupported parameter: 'max_tokens'".
+    # Omitted params let the OpenAI SDK / model use their own defaults.
     completion_kwargs: dict[str, Any] = {}
     if params.get("temperature") is not None:
         completion_kwargs["temperature"] = params["temperature"]
-    if params.get("max_completion_tokens") is not None:
-        completion_kwargs["max_completion_tokens"] = params[
-            "max_completion_tokens"
-        ]
+    if params.get("max_output_tokens") is not None:
+        completion_kwargs["max_output_tokens"] = params["max_output_tokens"]
     if params.get("top_p") is not None:
         completion_kwargs["top_p"] = params["top_p"]
-    if params.get("seed") is not None:
-        completion_kwargs["seed"] = params["seed"]
 
     timeout_val = params.get("timeout")
     engine = OpenAIEngine(
@@ -798,8 +800,8 @@ def _json_config_mode(ctx: Any, inputs: types.Object) -> None:
             "**Model:** `model`, `base_url`\n\n"
             "**Task:** `task`, `classes`, `question`, `prompt`, "
             "`system_prompt`, `prompt_override`\n\n"
-            "**Advanced:** `temperature`, `max_completion_tokens`, `top_p`, "
-            "`seed`, `batch_size`, `max_concurrent`, `max_workers`, "
+            "**Advanced:** `temperature`, `max_output_tokens`, `top_p`, "
+            "`batch_size`, `max_concurrent`, `max_workers`, "
             "`image_detail`, `coordinate_format`, `box_format`",
             name="params_ref",
         )
@@ -1045,9 +1047,9 @@ def _advanced_settings(
         ),
     )
     inputs.int(
-        "max_completion_tokens",
-        label="Max Completion Tokens",
-        default=stored.get("max_completion_tokens"),
+        "max_output_tokens",
+        label="Max Output Tokens",
+        default=stored.get("max_output_tokens"),
         min=1,
         max=16384,
         description=(
@@ -1062,15 +1064,6 @@ def _advanced_settings(
         min=0.0,
         max=1.0,
         description="Nucleus sampling (leave empty for model default)",
-    )
-    inputs.int(
-        "seed",
-        label="Seed",
-        default=stored.get("seed"),
-        description=(
-            "Random seed for reproducible results"
-            " (leave empty for non-deterministic)"
-        ),
     )
     inputs.int(
         "batch_size",
