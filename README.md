@@ -1,6 +1,6 @@
 # fo-openai
 
-A [FiftyOne](https://docs.voxel51.com) plugin for labeling images with OpenAI vision models. Send images from your dataset to models like `gpt-4o`, `gpt-4.1-mini`, or `gpt-5.4-nano` and get structured labels back — classifications, tags, detections, captions, VQA answers, or OCR text — directly in the FiftyOne App.
+A [FiftyOne](https://docs.voxel51.com) plugin for labeling images with OpenAI vision models. Send images from your dataset to models like `gpt-5.4-nano`, `gpt-5.4-mini`, or `gpt-5.4` and get structured labels back — classifications, tags, detections, captions, VQA answers, or OCR text — directly in the FiftyOne App.
 
 Uses the [OpenAI Responses API](https://developers.openai.com/api/docs/guides/structured-outputs) with Pydantic structured output for reliable, schema-validated responses.
 
@@ -63,7 +63,7 @@ dataset = foz.load_zoo_dataset("quickstart", max_samples=10)
 foo.execute_operator(
     "@Burhan-Q/fo-openai/run_openai_inference",
     params={
-        "model": "gpt-4o-mini",
+        "model": "gpt-5.4-nano",
         "task": "classify",
         "classes": "dog, cat, person, vehicle, other",
     },
@@ -101,7 +101,7 @@ The operator form is organized into 5 tabs:
 
 | Tab | Settings |
 |-----|----------|
-| **Model** | Model ID (e.g. `gpt-4o`, `gpt-4.1-mini`), custom base URL |
+| **Model** | Model ID (e.g. `gpt-5.4-nano`, `gpt-5.4-mini`), custom base URL |
 | **Task** | Task type, class labels, custom prompts, detection coordinate/box format |
 | **Exemplars** | Enable few-shot examples, select source (saved view, sample IDs, tag, or field) |
 | **Logging** | Enable logging, log level, log file path |
