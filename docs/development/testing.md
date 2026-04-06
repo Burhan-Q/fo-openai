@@ -43,7 +43,7 @@ fo.launch_app(dataset)
 foo.execute_operator(
     "@Burhan-Q/fo-openai/run_openai_inference",
     params={
-        "model": "gpt-4o-mini",
+        "model": "gpt-5.4-nano",
         "task": "classify",
         "classes": "dog, cat, bird",
     },
@@ -88,7 +88,7 @@ for f in ['__init__.py', 'engine.py', 'tasks.py', 'utils.py', 'operators.py', '_
 ## Key Things to Verify After Changes
 
 1. **Pydantic models produce valid JSON schemas** — `Model.model_json_schema()` for all 6 models + constrained variants
-2. **Pricing data loads** — `from _pricing import get_model_info; get_model_info("gpt-4o")`
+2. **Pricing data loads** — `from _pricing import get_model_info; get_model_info("gpt-5.4-nano")`
 3. **No hardcoded SDK defaults sent** — check `_create_engine` only includes user-set values in `completion_kwargs`
 4. **Secrets resolution** — test with `OPENAI_API_KEY` env var set, with `FIFTYONE_OPENAI_API_KEY` set, and with neither
 5. **Log file path resolution** — directory input, existing file input, new file input

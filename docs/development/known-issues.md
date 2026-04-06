@@ -14,9 +14,10 @@ When running inference on many samples in immediate (non-delegated) mode, the Fi
 ## Detection Coordinates
 
 ### General-purpose LLMs have limited detection accuracy
-Base (non-fine-tuned) OpenAI models like GPT-4o, GPT-4.1, and GPT-5 are
-not architecturally designed for precise spatial localization. On detection
-benchmarks (RF100-VL, CVPR 2025), GPT-5 scored mAP50:95 of only 1.5.
+Base (non-fine-tuned) OpenAI models like GPT-5.4-nano, GPT-5.4-mini, and
+GPT-5.4 are not architecturally designed for precise spatial localization.
+On detection benchmarks (RF100-VL, CVPR 2025), GPT-5 scored mAP50:95 of
+only 1.5.
 Bounding box positions may be offset, especially on non-square images.
 For precision-critical detection, consider fine-tuned models or dedicated
 detectors (YOLO, GroundingDINO) instead.
