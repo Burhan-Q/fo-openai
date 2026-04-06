@@ -1,4 +1,4 @@
-"""fo-openai: OpenAI-powered image labeling via LiteLLM for FiftyOne."""
+"""fo-openai: OpenAI-powered image labeling for FiftyOne."""
 
 from __future__ import annotations
 
