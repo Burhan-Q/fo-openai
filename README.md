@@ -1,4 +1,4 @@
-# fo-openai
+# FiftyOne Plugin for OpenAI
 
 A [FiftyOne](https://github.com/voxel51/fiftyone) plugin for labeling images with [OpenAI](https://developers.openai.com/api/docs) vision models. Send images from your dataset to models like `gpt-5.4-nano`, `gpt-5.4-mini`, or `gpt-5.4` and get structured labels back — classifications, tags, detections, captions, VQA answers, or OCR text — directly in the [FiftyOne App](https://docs.voxel51.com/user_guide/app.html).
 
@@ -6,13 +6,24 @@ Uses the [OpenAI Responses API](https://developers.openai.com/api/docs/guides/st
 
 ## Installation
 
-```bash
-# Install the plugin
-fiftyone plugins download https://github.com/Burhan-Q/fo-openai
+### CLI
 
-# Or clone and install locally
-git clone https://github.com/Burhan-Q/fo-openai.git
-fiftyone plugins create @Burhan-Q/fo-openai --from-dir ./fo-openai
+```bash
+fiftyone plugins download https://github.com/Burhan-Q/fo-openai
+```
+
+### Python
+
+```python
+import fiftyone.plugins as fop
+
+fop.download("https://github.com/Burhan-Q/fo-openai")
+```
+
+### Install dependencies
+
+```bash
+pip install openai pydantic
 ```
 
 ### Requirements
@@ -21,13 +32,6 @@ fiftyone plugins create @Burhan-Q/fo-openai --from-dir ./fo-openai
 - [FiftyOne](https://docs.voxel51.com) >= 1.13.5
 - [OpenAI Python SDK](https://github.com/openai/openai-python) >= 2.0.0
 - An [OpenAI API key](https://platform.openai.com/api-keys)
-
-Install Python dependencies:
-
-```bash
-cd "$(fiftyone config plugins_dir)/@Burhan-Q/fo-openai"
-pip install openai pydantic
-```
 
 ## Setup
 
@@ -127,6 +131,22 @@ Exemplar sources:
 - **Field** — samples where a field equals a value
 
 See [docs/operations/exemplars.md](docs/operations/exemplars.md) for details.
+
+## Development
+
+Clone the repository and symlink into your FiftyOne plugins directory:
+
+```bash
+git clone https://github.com/Burhan-Q/fo-openai.git
+ln -s "$(pwd)/fo-openai" "$(fiftyone config plugins_dir)/@Burhan-Q/fo-openai"
+```
+
+Run tests:
+
+```bash
+pip install pytest
+python -m pytest tests/
+```
 
 ## License
 
