@@ -35,13 +35,13 @@ For each batch of `batch_size` samples:
     - `BaseModel` → `task.parse_response(parsed)` converts to FiftyOne label
     - Parse failure → `[Parse]` error string, logged, counted
 17. **Write results** — `dataset.set_values()` for results + errors (dynamic fields)
-18. **Report progress** — `set_progress` via trigger (immediate) or `ctx.set_progress` (delegated)
+18. **Report progress** — `set_progress` via trigger (immediate) or `ctx.set_progress` (delegated); throttled to ≥3 s between updates
 
 ## Phase 4: Finalization
 
 19. **Run summary** — always written to `dataset.info["openai_runs"][field_name]` with error counts, first N error samples, and exemplar metadata (if enabled)
-20. **Persist config** — `save_global_config(params)` + `dataset.info["_openai_config"]` (excludes `api_key`)
-21. **Notify** — delegated: signal `openai_status` store; immediate: `reload_dataset`
+20. **Persist config** — `save_global_config(params)` + dataset-scoped `ExecutionStore` (excludes `api_key`)
+21. **Notify** — delegated: final `ctx.set_progress(1.0)` (status tracked by FiftyOne delegation infrastructure); immediate: `reload_dataset`
 
 ## Data Flow Diagram
 
@@ -65,5 +65,5 @@ instructions = task.get_instructions(exemplar_messages)  (computed once)
 └──────────────────────────────────────────────────────────────────┘
     ↓
 dataset.info["openai_runs"] ← run summary (+ exemplar metadata)
-dataset.info["_openai_config"] ← persisted config
+ExecutionStore("openai_config") ← persisted config (dataset-scoped)
 ```

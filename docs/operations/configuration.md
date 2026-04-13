@@ -14,8 +14,8 @@ Settings persist across app restarts at two levels:
 
 | Tier | Storage | Scope |
 |------|---------|-------|
-| Global | `ExecutionStore("openai_config")` | Cross-dataset |
-| Dataset | `dataset.info["_openai_config"]` | Per-dataset |
+| Global | `ExecutionStore("openai_config", dataset_id=None)` | Cross-dataset |
+| Dataset | `ctx.store("openai_config")` (dataset-scoped `ExecutionStore`) | Per-dataset |
 
 **Merge order:** hardcoded `_DEFAULTS` → global config → dataset config → form params.
 

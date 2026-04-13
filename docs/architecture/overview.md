@@ -23,7 +23,7 @@ Send images from a FiftyOne dataset to OpenAI vision models for labeling (classi
 fo-openai/
 ├── fiftyone.yml        # Plugin manifest — operators, secrets
 ├── __init__.py         # Entry point — register(plugin)
-├── operators.py        # OpenAIInference + CheckOpenAIStatus operators, all UI helpers
+├── operators.py        # OpenAIInference operator, all UI helpers
 ├── engine.py           # OpenAIEngine — async batch inference with structured output
 ├── tasks.py            # TaskConfig — prompts, Pydantic models, response parsing
 ├── exemplars.py        # Few-shot exemplar resolution, serialization, message building
@@ -38,7 +38,6 @@ fo-openai/
 | Operator | URI | Purpose |
 |----------|-----|---------|
 | `OpenAIInference` | `@Burhan-Q/fo-openai/run_openai_inference` | Main inference operator |
-| `CheckOpenAIStatus` | `@Burhan-Q/fo-openai/check_openai_status` | Delegated-job completion listener |
 
 ## Secrets (fiftyone.yml)
 

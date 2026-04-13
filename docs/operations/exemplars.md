@@ -63,7 +63,7 @@ adds approximately:
 For example, 5 exemplars at "auto" detail add ~3,975 tokens per call.
 Over 1,000 samples, that's ~3.975M extra input tokens.
 
-The cost summary (always visible above the tabs) shows a
+The cost summary (always visible below the tabs) shows a
 breakdown of inference cost vs. exemplar overhead.
 
 ## Configuration

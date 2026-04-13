@@ -49,7 +49,7 @@ total_cost = per_image_cost * num_samples
 
 ## Display
 
-Rendered as a persistent markdown table above the tabs (always visible regardless of active tab):
+Rendered as a persistent markdown table below the tabs (always visible regardless of active tab):
 
 ```
 | | Tokens/Call | Total Tokens | Cost/Sample | Total Cost |

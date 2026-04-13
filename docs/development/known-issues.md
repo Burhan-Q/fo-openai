@@ -9,7 +9,7 @@ The FiftyOne frontend does not render `TextFieldView` as a multi-line text area 
 `types.TextView` renders static text, not an input field. It cannot be used for user input despite its name suggesting otherwise. Use `types.TextFieldView` for text inputs.
 
 ### App may become non-responsive during long inference runs
-When running inference on many samples in immediate (non-delegated) mode, the FiftyOne App UI can become unresponsive. This appears to be caused by rapid `set_progress` triggers and/or large numbers of `set_values` writes. The GraphQL server (strawberry) may throw errors during this state. **Mitigation:** Use delegated execution for datasets larger than ~50 samples.
+When running inference on many samples in immediate (non-delegated) mode, the FiftyOne App UI can become unresponsive. This appears to be caused by rapid `set_progress` triggers and/or large numbers of `set_values` writes. The GraphQL server (strawberry) may throw errors during this state. Progress updates are now throttled (≥3 s between updates) to reduce this. **Mitigation:** Use delegated execution for datasets larger than ~50 samples.
 
 ## Detection Coordinates
 

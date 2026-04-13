@@ -25,10 +25,9 @@ The largest module. Contains both FiftyOne operators and all UI helper functions
 
 **Operators:**
 - `OpenAIInference` — dynamic form (`resolve_input`), batch execution loop (`execute`), config export (`resolve_output`)
-- `CheckOpenAIStatus` — `on_dataset_open` listener that subscribes to MongoDB change-stream for delegated job completion
 
 **Helper categories:**
-- Config resolution: `_resolve_config`, `_create_engine`, `_create_task`
+- Config resolution: `_resolve_config`, `_get_param`, `_create_engine`, `_create_task`
 - Class label resolution: `_resolve_classes_from_field`, `_get_field_classes`, `_find_label_fields`
 - Field management: `_resolve_field_name`, `_write_batch_results`
 - UI form builders: `_model_selector`, `_task_selector`, `_task_settings`, `_class_source_selector`, `_field_picker`, `_json_config_mode`, `_output_settings`, `_logging_settings`, `_advanced_settings`, `_image_detail_selector`, `_base_url_input`, `_detection_format_selectors`, `_exemplar_tab`, `_exemplar_saved_view_picker`, `_exemplar_field_picker`, `_exemplar_label_field_picker`, `_exemplar_preview`
@@ -66,7 +65,7 @@ Few-shot exemplar resolution, serialization, and message building.
 Stateless utilities.
 
 - Image encoding: `build_image_contents()` — parallel base64 encoding, URL passthrough, `detail` level
-- Config persistence: `get_global_config()`, `save_global_config()`, `clear_global_config()` via `ExecutionStore`
+- Config persistence: `get_global_config()`, `save_global_config()`, `clear_global_config()` (cross-dataset), `get_dataset_config()`, `save_dataset_config()`, `clear_dataset_config()` (dataset-scoped) via `ExecutionStore`
 - Parameter filtering: `pick_params()`, `normalize_classes()`, `parse_config_json()`
 
 ### `_log.py`
