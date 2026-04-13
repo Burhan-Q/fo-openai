@@ -1,8 +1,8 @@
 # fo-openai
 
-A [FiftyOne](https://docs.voxel51.com) plugin for labeling images with OpenAI vision models. Send images from your dataset to models like `gpt-5.4-nano`, `gpt-5.4-mini`, or `gpt-5.4` and get structured labels back — classifications, tags, detections, captions, VQA answers, or OCR text — directly in the FiftyOne App.
+A [FiftyOne](https://github.com/voxel51/fiftyone) plugin for labeling images with [OpenAI](https://developers.openai.com/api/docs) vision models. Send images from your dataset to models like `gpt-5.4-nano`, `gpt-5.4-mini`, or `gpt-5.4` and get structured labels back — classifications, tags, detections, captions, VQA answers, or OCR text — directly in the [FiftyOne App](https://docs.voxel51.com/user_guide/app.html).
 
-Uses the [OpenAI Responses API](https://developers.openai.com/api/docs/guides/structured-outputs) with Pydantic structured output for reliable, schema-validated responses.
+Uses the [OpenAI Responses API](https://developers.openai.com/api/docs/guides/structured-outputs) with [Pydantic](https://docs.pydantic.dev/) structured output for reliable, schema-validated responses.
 
 ## Installation
 
@@ -18,8 +18,9 @@ fiftyone plugins create @Burhan-Q/fo-openai --from-dir ./fo-openai
 ### Requirements
 
 - Python >= 3.11
-- FiftyOne >= 1.13.5
-- An OpenAI API key
+- [FiftyOne](https://docs.voxel51.com) >= 1.13.5
+- [OpenAI Python SDK](https://github.com/openai/openai-python) >= 2.0.0
+- An [OpenAI API key](https://platform.openai.com/api-keys)
 
 Install Python dependencies:
 
@@ -42,12 +43,14 @@ Or use the FiftyOne-specific name:
 export FIFTYONE_OPENAI_API_KEY="sk-..."
 ```
 
+Both are declared in `fiftyone.yml` and resolved automatically via FiftyOne's [plugin secrets](https://docs.voxel51.com/plugins/developing_plugins.html#plugin-secrets) system.
+
 ## Usage
 
 ### From the FiftyOne App
 
-1. Open a dataset in the FiftyOne App
-2. Press `` ` `` to open the operator browser
+1. Open a dataset in the [FiftyOne App](https://docs.voxel51.com/user_guide/app.html)
+2. Press `` ` `` to open the [operator browser](https://docs.voxel51.com/plugins/using_plugins.html#using-operators)
 3. Search for **"Run OpenAI Inference"**
 4. Select a model and task, then execute
 
@@ -65,58 +68,62 @@ foo.execute_operator(
     params={
         "model": "gpt-5.4-nano",
         "task": "classify",
-        "classes": "dog, cat, person, vehicle, other",
+        "classes": ["dog", "cat", "person", "vehicle", "other"],
     },
     dataset_name=dataset.name,
 )
 ```
 
+> **Note:** `classes` accepts either a list of strings or a comma-separated string (e.g. `"dog, cat, person"`).
+
 ## Supported Tasks
 
-| Task | Description | Output |
-|------|-------------|--------|
-| **Caption** | Describe the image | `fo.Classification` |
-| **Classify** | Assign a single label | `fo.Classification` |
-| **Tag** | Assign multiple labels | `fo.Classifications` |
-| **Detect** | Locate objects with bounding boxes | `fo.Detections` |
-| **VQA** | Answer a question about the image | `fo.Classification` |
-| **OCR** | Extract visible text | `fo.Classification` |
+| Task | Description | Output Type |
+|------|-------------|-------------|
+| **Caption** | Generate a text description of the image | [`fo.Classification`](https://docs.voxel51.com/api/fiftyone.core.labels.html#fiftyone.core.labels.Classification) |
+| **Classify** | Assign a single class label | [`fo.Classification`](https://docs.voxel51.com/api/fiftyone.core.labels.html#fiftyone.core.labels.Classification) |
+| **Tag** | Assign multiple labels | [`fo.Classifications`](https://docs.voxel51.com/api/fiftyone.core.labels.html#fiftyone.core.labels.Classifications) |
+| **Detect** | Locate objects with bounding boxes | [`fo.Detections`](https://docs.voxel51.com/api/fiftyone.core.labels.html#fiftyone.core.labels.Detections) |
+| **VQA** | Answer a question about the image | [`fo.Classification`](https://docs.voxel51.com/api/fiftyone.core.labels.html#fiftyone.core.labels.Classification) |
+| **OCR** | Extract visible text | [`fo.Classification`](https://docs.voxel51.com/api/fiftyone.core.labels.html#fiftyone.core.labels.Classification) |
 
 ## Features
 
-- **Cost preview** — estimated per-sample and total cost displayed before running, with token breakdown
+- **Structured output** — responses parsed via [`client.responses.parse()`](https://developers.openai.com/api/docs/guides/structured-outputs) with [Pydantic](https://docs.pydantic.dev/) models; no regex or string matching
+- **Cost preview** — estimated per-sample and total cost displayed before running, with token breakdown table
 - **Few-shot exemplars** — optionally provide labeled samples as reference examples to improve output quality
-- **Class labels from your dataset** — pick an existing label field to reuse its classes
-- **Structured output** — responses are parsed via the OpenAI Responses API with Pydantic models, not regex or string matching
+- **Class labels from your dataset** — pick an existing label field to reuse its classes, or type new classes with autocomplete
 - **Detection coordinate formats** — pixel (recommended), 0-1000 integers, or 0-1 floats
 - **Batch processing** — configurable batch size and concurrency
-- **Delegated execution** — run large jobs in the background
-- **Persistent settings** — all configuration (including exemplar settings) persists across app restarts
-- **Opt-in logging** — log to file for debugging, with auto-incrementing filenames
+- **[Delegated execution](https://docs.voxel51.com/plugins/using_plugins.html#delegated-operations)** — run large jobs in the background
+- **Persistent settings** — all configuration persists across app restarts via [ExecutionStore](https://docs.voxel51.com/plugins/developing_plugins.html#execution-store)
+- **Opt-in logging** — log to stderr and/or file, with auto-incrementing filenames
 - **JSON config export/import** — save and reuse run configurations
 
 ## Configuration
 
-The operator form is organized into 5 tabs:
+The operator form has **model and base URL always visible** at the top, with 4 tabs below:
 
-| Tab | Settings |
-|-----|----------|
-| **Model** | Model ID (e.g. `gpt-5.4-nano`, `gpt-5.4-mini`), custom base URL |
-| **Task** | Task type, class labels, custom prompts, detection coordinate/box format |
-| **Exemplars** | Enable few-shot examples, select source (saved view, sample IDs, tag, or field) |
-| **Logging** | Enable logging, log level, log file path |
-| **Advanced** | Temperature, max output tokens, top P, batch size, concurrency, image detail |
+| Section | Settings |
+|---------|----------|
+| **Model** (always visible) | Model ID (e.g. `gpt-5.4-nano`, `gpt-5.4-mini`), custom base URL |
+| **Task** tab | Task type, class labels (autocomplete), custom prompts, detection coordinate/box format, output field |
+| **Exemplars** tab | Enable few-shot examples, select source (saved view, sample IDs, tag, or field), label field |
+| **Logging** tab | Enable logging, log level, log file path |
+| **Advanced** tab | Temperature, max output tokens, top P, request timeout, batch size, concurrency, image workers, image detail, system prompt override |
 
-Settings persist between runs. Use the **Reset to defaults** mode to clear them.
+A cost summary table is rendered below the tabs (always visible regardless of active tab).
+
+Settings persist between runs. Use the **Reset to defaults** config mode to clear them.
 
 ## Few-Shot Exemplars
 
 Provide labeled samples as reference examples sent alongside every inference call. The model sees your exemplar images with their correct labels before processing each target image.
 
 Exemplar sources:
-- **Saved view** — a named FiftyOne saved view
+- **Saved view** — a named [FiftyOne saved view](https://docs.voxel51.com/user_guide/using_views.html#saving-views)
 - **Sample IDs** — specific sample IDs
-- **Tag** — all samples matching a tag
+- **Tag** — all samples matching a [tag](https://docs.voxel51.com/user_guide/using_datasets.html#tags)
 - **Field** — samples where a field equals a value
 
 See [docs/operations/exemplars.md](docs/operations/exemplars.md) for details.
