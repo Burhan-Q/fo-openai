@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import base64
 import json
-import logging
 import mimetypes
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-logger = logging.getLogger(__name__)
+from ._log import get_logger
+
+logger = get_logger(__name__)
 
 _PERSIST_KEYS: list[str] = [
     "model",
