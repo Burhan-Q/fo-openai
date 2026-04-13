@@ -22,6 +22,7 @@ from typing import Any
 
 _ROOT_NAME = "fo_openai"
 _CONFIGURED = False
+_LOG_MAX_INCREMENT = 100
 
 # Reusable format for both stream and file handlers
 _FMT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -60,17 +61,16 @@ def _resolve_log_path(raw: str) -> Path:
         ts = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
         return path / f"{ts}.log"
 
-    # Existing file → auto-increment suffix
+    # Existing file → auto-increment suffix (capped, then overwrite newest)
     if path.exists():
         stem = path.stem
         suffix = path.suffix
         parent = path.parent
-        n = 2
-        while True:
+        for n in range(2, _LOG_MAX_INCREMENT + 1):
             candidate = parent / f"{stem}{n}{suffix}"
             if not candidate.exists():
                 return candidate
-            n += 1
+        return parent / f"{stem}{_LOG_MAX_INCREMENT}{suffix}"
 
     # New file → use as-is
     path.parent.mkdir(parents=True, exist_ok=True)
