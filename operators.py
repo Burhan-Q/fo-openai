@@ -152,11 +152,7 @@ class OpenAIInference(foo.Operator):
 
     def execute(self, ctx: Any) -> Generator[Any, None, None]:
         """Run inference over the target view, yielding progress."""
-        params: dict[str, Any] = dict(ctx.params)
-        # Flatten nested h_stack groups so downstream reads work unchanged
-        for group in ("model_params", "execution"):
-            if isinstance(params.get(group), dict):
-                params.update(params.pop(group))
+        params: dict[str, Any] = _flatten_params(ctx.params)
         config_mode: str = params.get("config_mode", "manual")
 
         # Handle reset mode
@@ -454,12 +450,11 @@ class OpenAIInference(foo.Operator):
         outputs.str("summary", label="Summary")
 
         if ctx.params.get("config_mode") != "reset":
-            flat = dict(ctx.params)
-            for group in ("model_params", "execution"):
-                if isinstance(flat.get(group), dict):
-                    flat.update(flat.pop(group))
             cfg_json = json.dumps(
-                pick_params(flat, exclude=("api_key",)), indent=2
+                pick_params(
+                    _flatten_params(ctx.params), exclude=("api_key",)
+                ),
+                indent=2
             )
             outputs.str(
                 "config_export",
@@ -476,12 +471,24 @@ class OpenAIInference(foo.Operator):
 # ---------------------------------------------------------------------------
 
 
+_H_STACK_GROUPS = ("model_params", "execution")
+
+
+def _flatten_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Return a flat copy of *params*, inlining any ``h_stack`` groups."""
+    out = dict(params)
+    for group in _H_STACK_GROUPS:
+        if isinstance(out.get(group), dict):
+            out.update(out.pop(group))
+    return out
+
+
 def _get_param(ctx: Any, key: str, default: Any = None) -> Any:
     """Read a param that may be nested inside an ``h_stack`` group."""
     val = ctx.params.get(key)
     if val is not None:
         return val
-    for group in ("model_params", "execution"):
+    for group in _H_STACK_GROUPS:
         sub = ctx.params.get(group)
         if isinstance(sub, dict) and key in sub:
             return sub[key]
@@ -1493,6 +1500,12 @@ def _exemplar_preview(ctx: Any, inputs: types.Object) -> None:
     count = _count_exemplar_samples(ctx, source)
     if count is None:
         return
+    if isinstance(count, str):
+        inputs.view(
+            "exemplar_error",
+            types.Warning(label=f"Exemplar resolution error: {count}"),
+        )
+        return
     if count == 0:
         inputs.view(
             "exemplar_empty",
@@ -1529,10 +1542,11 @@ def _exemplar_preview(ctx: Any, inputs: types.Object) -> None:
         )
 
 
-def _count_exemplar_samples(ctx: Any, source: str) -> int | None:
+def _count_exemplar_samples(ctx: Any, source: str) -> int | str | None:
     """Attempt to count exemplar samples based on the current source config.
 
-    Returns count or ``None`` if source configuration is incomplete.
+    Returns an ``int`` count, ``None`` if source configuration is
+    incomplete, or an error ``str`` if resolution failed.
     """
     if not ctx.dataset:
         return None
@@ -1560,8 +1574,8 @@ def _count_exemplar_samples(ctx: Any, source: str) -> int | None:
             if not field_value:
                 return len(ctx.dataset.match(F(field_name) == True))  # noqa: E712
             return len(ctx.dataset.match(F(field_name) == field_value))
-    except Exception:
-        return None
+    except Exception as e:
+        return f"{type(e).__name__}: {e}"
     return None
 
 
@@ -1696,7 +1710,8 @@ def _cost_summary(
     exemplar_total = 0.0
     if exemplars_enabled:
         source = ctx.params.get("exemplar_source", "saved_view")
-        exemplar_count = _count_exemplar_samples(ctx, source) or 0
+        _ec = _count_exemplar_samples(ctx, source)
+        exemplar_count = _ec if isinstance(_ec, int) else 0
         exemplar_tokens_per_call = exemplar_count * (img_tokens + EXEMPLAR_TEXT_TOKENS)
         exemplar_per_sample = exemplar_tokens_per_call * input_cpt
         exemplar_total = exemplar_per_sample * num_samples
