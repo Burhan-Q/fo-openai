@@ -169,16 +169,6 @@ def _resolve_field(
 # Serialization — FiftyOne label → Pydantic response model JSON
 # ---------------------------------------------------------------------------
 
-# Mapping: task name → compatible FiftyOne label types
-_TASK_COMPAT: dict[str, set[str]] = {
-    "classify": {"Classification", "str"},
-    "tag": {"Classifications", "Classification", "str"},
-    "caption": {"str", "Classification"},
-    "detect": {"Detections"},
-    "vqa": {"str", "Classification"},
-    "ocr": {"str", "Classification"},
-}
-
 
 def serialize_exemplar(
     sample: fo.Sample,

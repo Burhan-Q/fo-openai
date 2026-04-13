@@ -7,14 +7,15 @@ structured output with Pydantic models.
 
 from __future__ import annotations
 
-import logging
 from functools import lru_cache
 from typing import Any
 
 import fiftyone as fo
 from pydantic import BaseModel, create_model
 
-logger = logging.getLogger(__name__)
+from ._log import get_logger
+
+logger = get_logger(__name__)
 
 # -- Pydantic response models --
 
@@ -109,10 +110,6 @@ IMAGE_TOKEN_COUNTS: dict[str, int] = {
 
 # Base prompt text token estimate (system + user prompt text, no image)
 PROMPT_TEXT_TOKENS: int = 50
-
-# Bumped prompt token estimate when few-shot exemplars are active
-# (accounts for the preamble text added to the system prompt)
-PROMPT_TEXT_TOKENS_FEWSHOT: int = 70
 
 # Estimated tokens per exemplar (framing text + serialized JSON)
 EXEMPLAR_TEXT_TOKENS: int = 30
