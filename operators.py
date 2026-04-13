@@ -4,6 +4,7 @@ storage."""
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Generator
 
 import fiftyone as fo
@@ -23,11 +24,14 @@ from .tasks import (
 )
 from .utils import (
     build_image_contents,
+    clear_dataset_config,
     clear_global_config,
+    get_dataset_config,
     get_global_config,
     normalize_classes,
     parse_config_json,
     pick_params,
+    save_dataset_config,
     save_global_config,
 )
 
@@ -83,6 +87,10 @@ class OpenAIInference(foo.Operator):
         )
         config_mode: str = ctx.params.get("config_mode", "manual")
 
+        # Target view (all modes except reset)
+        if config_mode != "reset":
+            inputs.view_target(ctx)
+
         if config_mode == "json":
             _json_config_mode(ctx, inputs)
         elif config_mode == "reset":
@@ -96,14 +104,13 @@ class OpenAIInference(foo.Operator):
                 ),
             )
         else:
-            # -- Cost summary ABOVE tabs (persistent banner) --
-            task = ctx.params.get("task") or stored.get("task")
-            _cost_summary(ctx, inputs, task)
+            # Model (always visible, outside tabs)
+            _model_selector(ctx, inputs, stored)
+            _base_url_input(inputs, stored)
 
-            # -- 5-tab layout --
+            # -- 4-tab layout --
             tabs = types.TabsView()
             for key, label in [
-                ("model", "Model"),
                 ("task", "Task"),
                 ("exemplars", "Exemplars"),
                 ("logging", "Logging"),
@@ -114,16 +121,13 @@ class OpenAIInference(foo.Operator):
             inputs.enum(
                 "active_tab",
                 tabs.values(),
-                default="model",
+                default="task",
                 label="Settings",
                 view=tabs,
             )
-            active_tab: str = ctx.params.get("active_tab", "model")
+            active_tab: str = ctx.params.get("active_tab", "task")
 
-            if active_tab == "model":
-                _model_selector(ctx, inputs, stored)
-                _base_url_input(inputs, stored)
-            elif active_tab == "task":
+            if active_tab == "task":
                 task = _task_selector(ctx, inputs, stored)
                 _task_settings(ctx, inputs, task, stored)
                 _output_settings(ctx, inputs, task, stored)
@@ -134,8 +138,9 @@ class OpenAIInference(foo.Operator):
             elif active_tab == "advanced":
                 _advanced_settings(ctx, inputs, stored)
 
-        if config_mode != "reset":
-            inputs.view_target(ctx)
+            # Cost summary (last thing before submit)
+            task = ctx.params.get("task") or stored.get("task")
+            _cost_summary(ctx, inputs, task)
 
         return types.Property(
             inputs, view=types.View(label="OpenAI Inference")
@@ -147,14 +152,17 @@ class OpenAIInference(foo.Operator):
 
     def execute(self, ctx: Any) -> Generator[Any, None, None]:
         """Run inference over the target view, yielding progress."""
-        params: dict[str, Any] = ctx.params
+        params: dict[str, Any] = dict(ctx.params)
+        # Flatten nested h_stack groups so downstream reads work unchanged
+        for group in ("model_params", "execution"):
+            if isinstance(params.get(group), dict):
+                params.update(params.pop(group))
         config_mode: str = params.get("config_mode", "manual")
 
         # Handle reset mode
         if config_mode == "reset":
             clear_global_config()
-            ctx.dataset.info.pop("_openai_config", None)
-            ctx.dataset.save()
+            clear_dataset_config(ctx)
             if not ctx.delegated:
                 yield ctx.trigger("reload_dataset")
             return
@@ -297,6 +305,7 @@ class OpenAIInference(foo.Operator):
         processed = 0
         api_errors = 0
         parse_errors = 0
+        _last_progress = 0.0
         # Collect first N error samples for the run summary
         error_samples: list[dict[str, str]] = []
         max_error_samples = 10
@@ -382,15 +391,21 @@ class OpenAIInference(foo.Operator):
                 len(errors),
             )
 
-            if ctx.delegated:
-                ctx.set_progress(
-                    progress=processed / total, label=progress_label
-                )
-            else:
-                yield ctx.trigger(
-                    "set_progress",
-                    dict(progress=processed / total, label=progress_label),
-                )
+            _now = time.monotonic()
+            if processed == total or (_now - _last_progress) >= 3.0:
+                _last_progress = _now
+                if ctx.delegated:
+                    ctx.set_progress(
+                        progress=processed / total, label=progress_label
+                    )
+                else:
+                    yield ctx.trigger(
+                        "set_progress",
+                        dict(
+                            progress=processed / total,
+                            label=progress_label,
+                        ),
+                    )
 
         # -- Run summary (always written) --
         total_err = api_errors + parse_errors
@@ -425,13 +440,11 @@ class OpenAIInference(foo.Operator):
         )
 
         save_global_config(params)
-        ctx.dataset.info["_openai_config"] = pick_params(
-            params, exclude=("api_key",)
-        )
+        save_dataset_config(ctx, params)
         ctx.dataset.save()
 
         if ctx.delegated:
-            ctx.store("openai_status").set("done", True)
+            ctx.set_progress(progress=1.0, label=f"Complete: {total} samples")
         else:
             yield ctx.trigger("reload_dataset")
 
@@ -441,8 +454,12 @@ class OpenAIInference(foo.Operator):
         outputs.str("summary", label="Summary")
 
         if ctx.params.get("config_mode") != "reset":
+            flat = dict(ctx.params)
+            for group in ("model_params", "execution"):
+                if isinstance(flat.get(group), dict):
+                    flat.update(flat.pop(group))
             cfg_json = json.dumps(
-                pick_params(ctx.params, exclude=("api_key",)), indent=2
+                pick_params(flat, exclude=("api_key",)), indent=2
             )
             outputs.str(
                 "config_export",
@@ -454,67 +471,21 @@ class OpenAIInference(foo.Operator):
         return types.Property(outputs, view=types.View(label="Complete"))
 
 
-class CheckOpenAIStatus(foo.Operator):
-    """Auto-subscribe to delegated-job completion via MongoDB change-stream.
-
-    Fires a toast and reloads the dataset when the worker signals done.
-    """
-
-    @property
-    def config(self) -> foo.OperatorConfig:
-        """Return the operator configuration."""
-        return foo.OperatorConfig(
-            name="check_openai_status",
-            label="Check OpenAI Status",
-            on_dataset_open=True,
-            execute_as_generator=True,
-            unlisted=True,
-        )
-
-    async def execute(self, ctx: Any) -> Any:
-        """Wait for a completion signal, then notify and reload."""
-        import asyncio
-
-        from fiftyone.operators.store.notification_service import (
-            default_notification_service,
-        )
-
-        if not ctx.dataset:
-            return
-
-        loop = asyncio.get_running_loop()
-        event = asyncio.Event()
-
-        def _on_change(_message: Any) -> None:
-            """Set the event from the notification callback thread."""
-            loop.call_soon_threadsafe(event.set)
-
-        sub_id = default_notification_service.subscribe(
-            "openai_status",
-            callback=_on_change,
-            dataset_id=str(ctx.dataset._doc.id),
-        )
-
-        try:
-            await asyncio.wait_for(event.wait(), timeout=600)
-            ctx.store("openai_status").delete("done")
-            yield ctx.trigger(
-                "notify",
-                params={
-                    "message": "OpenAI inference complete",
-                    "variant": "success",
-                },
-            )
-            yield ctx.trigger("reload_dataset")
-        except asyncio.TimeoutError:
-            pass
-        finally:
-            default_notification_service.unsubscribe(sub_id)
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _get_param(ctx: Any, key: str, default: Any = None) -> Any:
+    """Read a param that may be nested inside an ``h_stack`` group."""
+    val = ctx.params.get(key)
+    if val is not None:
+        return val
+    for group in ("model_params", "execution"):
+        sub = ctx.params.get(group)
+        if isinstance(sub, dict) and key in sub:
+            return sub[key]
+    return default
 
 
 def _error(ctx: Any, message: str) -> Any:
@@ -559,7 +530,7 @@ def _resolve_config(ctx: Any) -> dict[str, Any]:
     merged = dict(_DEFAULTS)
     for cfg in (
         get_global_config(),
-        ctx.dataset.info.get("_openai_config") or {},
+        get_dataset_config(ctx),
     ):
         merged.update({k: v for k, v in cfg.items() if v is not None})
     return merged
@@ -652,7 +623,7 @@ def _resolve_classes_from_field(
 
     label_classes = _get_field_classes(ctx.dataset, source_field)
     if label_classes:
-        params["classes"] = ", ".join(sorted(label_classes))
+        params["classes"] = sorted(label_classes)
 
 
 _LABEL_PATH_SUFFIXES: list[str] = [
@@ -902,15 +873,22 @@ def _class_source_selector(
     if class_source == "field":
         _field_picker(ctx, inputs)
     elif class_source == "custom":
-        stored_classes = stored.get("classes") or ""
-        if isinstance(stored_classes, list):
-            stored_classes = ", ".join(stored_classes)
-        inputs.str(
+        stored_classes = stored.get("classes") or []
+        if isinstance(stored_classes, str):
+            stored_classes = [c.strip() for c in stored_classes.split(",") if c.strip()]
+        class_view = types.AutocompleteView(
+            allow_user_input=True, allow_duplicates=False
+        )
+        for cls in stored_classes:
+            class_view.add_choice(cls, label=cls)
+        inputs.list(
             "classes",
+            types.String(),
             label="Classes",
             required=False,
             default=stored_classes,
-            description="Comma-separated class names",
+            description="",
+            view=class_view,
         )
     # "open" needs no additional input
 
@@ -1035,74 +1013,96 @@ def _output_settings(
 def _advanced_settings(
     ctx: Any, inputs: types.Object, stored: dict[str, Any]
 ) -> None:
-    """Add advanced settings fields to the form."""
-    inputs.float(
+    """Add advanced settings fields arranged in two-column grids."""
+    # -- Model Parameters (2-col) --
+    inputs.view(
+        "model_params_header", types.Header(label="Model Parameters")
+    )
+    mp = inputs.h_stack("model_params", gap=2)
+    mp.float(
         "temperature",
-        label="Temperature",
         default=stored.get("temperature"),
         min=0.0,
         max=2.0,
-        description=(
-            "Sampling temperature (leave empty for model default)"
+        view=types.View(
+            label="Temperature",
+            description="Sampling temperature",
+            space=6,
         ),
     )
-    inputs.int(
+    mp.int(
         "max_output_tokens",
-        label="Max Output Tokens",
         default=stored.get("max_output_tokens"),
         min=1,
         max=16384,
-        description=(
-            "Maximum tokens to generate per sample"
-            " (leave empty for model default)"
+        view=types.View(
+            label="Max Output Tokens",
+            description="Max tokens per sample",
+            space=6,
         ),
     )
-    inputs.float(
+    mp.float(
         "top_p",
-        label="Top P",
         default=stored.get("top_p"),
         min=0.0,
         max=1.0,
-        description="Nucleus sampling (leave empty for model default)",
+        view=types.View(
+            label="Top P",
+            description="Nucleus sampling",
+            space=6,
+        ),
     )
-    inputs.int(
-        "batch_size",
-        label="Batch Size",
-        default=stored.get("batch_size"),
-        min=1,
-        max=512,
-        description="Number of samples per inference batch",
-    )
-    inputs.int(
-        "max_concurrent",
-        label="Max Concurrent Requests",
-        default=stored.get("max_concurrent"),
-        min=1,
-        max=256,
-        description="Maximum parallel API requests",
-    )
-    inputs.int(
-        "max_workers",
-        label="Image Loading Workers",
-        default=stored.get("max_workers"),
-        min=1,
-        max=32,
-        description="Thread pool size for parallel image loading/encoding",
-    )
-    inputs.int(
+    mp.int(
         "timeout",
-        label="Request Timeout (seconds)",
         default=stored.get("timeout"),
         min=10,
         max=600,
-        description=(
-            "Per-request timeout in seconds"
-            " (leave empty for SDK default)"
+        view=types.View(
+            label="Request Timeout",
+            description="Per-request seconds",
+            space=6,
         ),
     )
 
-    _image_detail_selector(inputs, stored)
+    # -- Execution (2-col) --
+    inputs.view("exec_header", types.Header(label="Execution"))
+    ex = inputs.h_stack("execution", gap=2)
+    ex.int(
+        "batch_size",
+        default=stored.get("batch_size"),
+        min=1,
+        max=512,
+        view=types.View(
+            label="Batch Size",
+            description="Samples per batch",
+            space=6,
+        ),
+    )
+    ex.int(
+        "max_concurrent",
+        default=stored.get("max_concurrent"),
+        min=1,
+        max=256,
+        view=types.View(
+            label="Max Concurrent",
+            description="Parallel API requests",
+            space=6,
+        ),
+    )
+    ex.int(
+        "max_workers",
+        default=stored.get("max_workers"),
+        min=1,
+        max=32,
+        view=types.View(
+            label="Image Workers",
+            description="Image loading threads",
+            space=6,
+        ),
+    )
+    _image_detail_selector(ex, stored, space=6)
 
+    # -- System Prompt (full width) --
     inputs.str(
         "system_prompt",
         label="System Prompt Override",
@@ -1116,10 +1116,22 @@ def _advanced_settings(
 
 
 def _image_detail_selector(
-    inputs: types.Object, stored: dict[str, Any]
+    container: types.Object,
+    stored: dict[str, Any],
+    space: int | None = None,
 ) -> None:
-    """Add the OpenAI image-detail dropdown."""
-    detail_dropdown = types.Dropdown()
+    """Add the OpenAI image-detail dropdown.
+
+    Args:
+        container: The form object or h_stack to add the field to.
+        stored: Persisted config values for defaults.
+        space: Optional grid space (0-12) for two-column layouts.
+    """
+    detail_dropdown = types.Dropdown(
+        label="Image Detail",
+        description="Vision API detail level",
+        space=space,
+    )
     detail_dropdown.add_choice(
         "auto",
         label="Auto (Recommended)",
@@ -1135,7 +1147,7 @@ def _image_detail_selector(
         label="High",
         description="~765 tokens per image, more detailed analysis",
     )
-    inputs.enum(
+    container.enum(
         "image_detail",
         detail_dropdown.values(),
         default=stored.get("image_detail"),
@@ -1488,7 +1500,7 @@ def _exemplar_preview(ctx: Any, inputs: types.Object) -> None:
         )
         return
 
-    image_detail: str = ctx.params.get("image_detail", "auto")
+    image_detail: str = _get_param(ctx, "image_detail", "auto")
     img_tokens = IMAGE_TOKEN_COUNTS.get(image_detail, 765)
     per_exemplar = img_tokens + EXEMPLAR_TEXT_TOKENS
     total_overhead = count * per_exemplar
@@ -1554,7 +1566,7 @@ def _count_exemplar_samples(ctx: Any, source: str) -> int | None:
 
 
 # ---------------------------------------------------------------------------
-# Cost summary (always visible, outside tabs)
+# Cost summary (always visible, below tabs)
 # ---------------------------------------------------------------------------
 
 # Default cost warning threshold in USD
@@ -1619,7 +1631,7 @@ def _fmt_tokens(n: int) -> str:
 def _cost_summary(
     ctx: Any, inputs: types.Object, task: str | None
 ) -> None:
-    """Render a cost summary above the tabs as a persistent banner.
+    """Render a cost summary below the tabs as a persistent banner.
 
     Inference and exemplar costs are computed independently so the
     table rows are additive and the total is their sum. Includes a
@@ -1650,7 +1662,7 @@ def _cost_summary(
         )
         return
 
-    image_detail: str = ctx.params.get("image_detail", "auto")
+    image_detail: str = _get_param(ctx, "image_detail", "auto")
     img_tokens = IMAGE_TOKEN_COUNTS.get(image_detail, 765)
     output_tokens = OUTPUT_TOKEN_ESTIMATES.get(task, 60)
     prompt_tokens = _estimate_prompt_tokens(ctx, task)

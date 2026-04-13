@@ -7,7 +7,6 @@ fiftyone:
   version: ">=1.13.5"
 operators:
   - run_openai_inference
-  - check_openai_status
 secrets:
   - FIFTYONE_OPENAI_API_KEY
   - OPENAI_API_KEY

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import mimetypes
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _PERSIST_KEYS: list[str] = [
     "model",
@@ -83,6 +86,7 @@ def get_global_config() -> dict[str, Any]:
         cfg = _global_store().get("config")
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
+        logger.warning("Failed to read global config", exc_info=True)
         return {}
 
 
@@ -91,7 +95,7 @@ def save_global_config(params: dict[str, Any]) -> None:
     try:
         _global_store().set("config", pick_params(params))
     except Exception:
-        pass
+        logger.warning("Failed to save global config", exc_info=True)
 
 
 def clear_global_config() -> None:
@@ -99,7 +103,50 @@ def clear_global_config() -> None:
     try:
         _global_store().delete("config")
     except Exception:
-        pass
+        logger.warning("Failed to clear global config", exc_info=True)
+
+
+def get_dataset_config(ctx: Any) -> dict[str, Any]:
+    """Read dataset-scoped config from the ``ExecutionStore``.
+
+    Falls back to ``ctx.dataset.info["_openai_config"]`` for one-time
+    migration from the legacy storage location.
+    """
+    try:
+        cfg = ctx.store("openai_config").get("config")
+        if isinstance(cfg, dict):
+            return cfg
+    except Exception:
+        logger.warning("Failed to read dataset config", exc_info=True)
+
+    # Legacy migration: copy from dataset.info if present
+    legacy = (ctx.dataset.info.get("_openai_config") or {}) if ctx.dataset else {}
+    if legacy:
+        try:
+            ctx.store("openai_config").set("config", legacy)
+            ctx.dataset.info.pop("_openai_config", None)
+            ctx.dataset.save()
+        except Exception:
+            logger.warning("Failed to migrate legacy config", exc_info=True)
+    return legacy if isinstance(legacy, dict) else {}
+
+
+def save_dataset_config(ctx: Any, params: dict[str, Any]) -> None:
+    """Persist *params* to the dataset-scoped ``ExecutionStore``."""
+    try:
+        ctx.store("openai_config").set(
+            "config", pick_params(params, exclude=("api_key",))
+        )
+    except Exception:
+        logger.warning("Failed to save dataset config", exc_info=True)
+
+
+def clear_dataset_config(ctx: Any) -> None:
+    """Delete the dataset-scoped config key."""
+    try:
+        ctx.store("openai_config").delete("config")
+    except Exception:
+        logger.warning("Failed to clear dataset config", exc_info=True)
 
 
 def parse_config_json(
